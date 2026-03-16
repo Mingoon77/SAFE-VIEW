@@ -1,29 +1,20 @@
 # pages/1_모니터링.py — 실시간 위험 감지 메인 화면
 #
-# 동작 방식:
-#   시작 버튼 → 프레임 1장 처리 → st.rerun() → 반복
-#   정지 버튼 클릭 시 session_state.running = False → 루프 종료
-#
-# RTSP 안정화 처리:
-#   - validate_rtsp_url(): 플레이스홀더/형식 오류 사전 차단
-#   - test_rtsp_connection(): 연결 테스트 버튼으로 사전 확인 가능
-#   - 프레임 읽기 실패 시 reconnect() 자동 호출 (최대 3회 시도)
-#   - 재연결 성공 시 st.rerun()으로 스트리밍 즉시 재개
+# ★ 깜빡임 해결 구조 ★
+#   RTSP : 백그라운드 스레드가 프레임을 계속 읽음
+#           → 메인 루프는 스레드에서 꺼내기만 해서 네트워크 대기 없음
+#   파일 : while 루프에서 직접 읽기 (이미 안정적)
+#   공통 : last_good_frame 캐시 → 새 프레임 없어도 절대 빈 화면 안 됨
 
 import streamlit as st
-import cv2
-import os
-import sys
-import time
+import cv2, os, sys, time, threading
 from collections import deque
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from config import (
-    DATA_DIR, FRAME_SKIP, CLIP_BUFFER_SEC, MAX_CLIP_FPS
-)
+from config import DATA_DIR, FRAME_SKIP, CLIP_BUFFER_SEC, MAX_CLIP_FPS
 from core.detector     import Detector
 from core.roi_manager  import load_roi
 from core.video_source import VideoSource, validate_rtsp_url, test_rtsp_connection
@@ -33,30 +24,135 @@ from core.event_saver  import (
     log_event, get_recent_events,
 )
 
-# ── 페이지 설정 ────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════
+# RTSP 백그라운드 스레드 리더
+# ══════════════════════════════════════════════════════
+class RTSPThreadReader:
+    """
+    RTSP 프레임을 별도 스레드에서 지속적으로 읽어
+    항상 최신 프레임을 메인 루프에 제공합니다.
+
+    [왜 필요한가?]
+    RTSP는 네트워크 상태에 따라 cap.read()가 수십 ms 동안 블로킹됩니다.
+    메인 루프(UI 스레드)가 이걸 직접 호출하면 그 순간 화면이 멈추고
+    frame_ph가 잠깐 비어 흰 깜빡임이 발생합니다.
+    스레드 분리 후 메인 루프는 즉시 반환되는 get_latest_frame()만 호출하므로
+    블로킹이 없어 깜빡임이 사라집니다.
+    """
+
+    def __init__(self, url: str):
+        self._url           = url
+        self._latest_frame  = None          # 가장 최신 프레임
+        self._lock          = threading.Lock()
+        self._stop_event    = threading.Event()
+        self._thread        = threading.Thread(target=self._run, daemon=True)
+        self._connected     = False
+        self._error         = ""
+        self._frame_count   = 0
+
+    # ── 시작 ────────────────────────────────────────────
+    def start(self) -> tuple[bool, str]:
+        """
+        스레드를 시작하고 첫 프레임이 올 때까지 최대 6초 대기.
+        반환: (성공 여부, 오류 메시지)
+        """
+        self._thread.start()
+        for _ in range(60):          # 0.1초 × 60 = 최대 6초 대기
+            time.sleep(0.1)
+            with self._lock:
+                if self._latest_frame is not None:
+                    return True, ""
+            if self._error:
+                return False, self._error
+        return False, "타임아웃: 6초 내에 첫 프레임을 받지 못했습니다."
+
+    # ── 스레드 본체 ──────────────────────────────────────
+    def _run(self):
+        vs = VideoSource(self._url)
+        if not vs.open():
+            self._error = (
+                "RTSP 연결 실패 — IP/포트/채널 경로·포트포워딩·방화벽을 확인하세요."
+            )
+            return
+
+        self._connected = True
+        fail_streak = 0   # 연속 실패 횟수
+
+        while not self._stop_event.is_set():
+            ret, frame = vs.cap.read()   # cap.read() 직접 호출 (grab 중복 방지)
+
+            if ret and frame is not None:
+                fail_streak = 0
+                with self._lock:
+                    self._latest_frame = frame   # 최신 프레임으로 교체
+                    self._frame_count += 1
+            else:
+                fail_streak += 1
+                if fail_streak >= 20:            # 약 1초 연속 실패 → 재연결
+                    vs.release()
+                    time.sleep(2.0)
+                    if vs.open():
+                        fail_streak = 0
+                    else:
+                        self._error = "재연결 실패"
+                        break
+                time.sleep(0.05)                 # 실패 시 잠시 대기
+
+        vs.release()
+        self._connected = False
+
+    # ── 최신 프레임 꺼내기 ───────────────────────────────
+    def get_latest_frame(self):
+        """메인 루프에서 호출. 즉시 반환 (블로킹 없음)."""
+        with self._lock:
+            return self._latest_frame.copy() if self._latest_frame is not None else None
+
+    def stop(self):
+        self._stop_event.set()
+
+    @property
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    @property
+    def frame_count(self) -> int:
+        return self._frame_count
+
+    @property
+    def error(self) -> str:
+        return self._error
+
+
+# ══════════════════════════════════════════════════════
+# 페이지 설정 & session_state 초기화
+# ══════════════════════════════════════════════════════
 st.set_page_config(
     page_title="모니터링 | 보행자 위험 감지",
     page_icon="🎥",
     layout="wide",
 )
 
-# ── session_state 초기화 ───────────────────────────────
 def init_state():
     defaults = {
-        "running":       False,
-        "prev_danger":   False,
-        "frame_idx":     0,
-        "last_event_ts": 0.0,
-        "fps_timer":     time.time(),
-        "fps_count":     0,
-        "fps_display":   0.0,
-        "video_source":  None,
-        "detector":      None,
-        "frame_buffer":  deque(),
-        "source_name":   "",
-        "alert_msg":     "",
-        "alert_expires": 0.0,
-        "reconnect_msg": "",   # 재연결 상태 메시지
+        "running":        False,
+        "prev_danger":    False,
+        "frame_idx":      0,
+        "last_event_ts":  0.0,
+        "fps_timer":      time.time(),
+        "fps_count":      0,
+        "fps_display":    0.0,
+        "video_source":   None,   # 파일용 VideoSource
+        "rtsp_reader":    None,   # RTSP용 RTSPThreadReader
+        "detector":       None,
+        "frame_buffer":   deque(),
+        "source_name":    "",
+        "is_rtsp":        False,
+        "alert_msg":      "",
+        "alert_expires":  0.0,
+        "last_good_frame": None,  # 깜빡임 방지용 마지막 정상 프레임
+        "rtsp_url_saved": "",
+        "rtsp_cam_name":  "rtsp_stream",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -64,7 +160,10 @@ def init_state():
 
 init_state()
 
-# ── 헬퍼 함수 ─────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════
+# 헬퍼
+# ══════════════════════════════════════════════════════
 def get_video_files() -> list:
     if not os.path.exists(DATA_DIR):
         return []
@@ -83,20 +182,33 @@ def update_fps():
         st.session_state.fps_count = 0
         st.session_state.fps_timer = time.time()
 
-# ── 사이드바 ───────────────────────────────────────────
+def stop_all():
+    """영상 소스와 스레드를 모두 정리합니다."""
+    if st.session_state.rtsp_reader:
+        st.session_state.rtsp_reader.stop()
+        st.session_state.rtsp_reader = None
+    if st.session_state.video_source:
+        st.session_state.video_source.release()
+        st.session_state.video_source = None
+    st.session_state.running        = False
+    st.session_state.last_good_frame = None
+
+
+# ══════════════════════════════════════════════════════
+# 사이드바
+# ══════════════════════════════════════════════════════
 with st.sidebar:
     st.header("⚙️ 설정")
 
     source_type = st.radio(
-        "영상 소스 선택",
-        ["📁 로컬 영상 파일", "📡 RTSP 스트림 (자택 CCTV)"],
-        key="source_type",
+        "영상 소스",
+        ["📁 로컬 영상 파일", "📡 RTSP (자택 CCTV)"],
         disabled=st.session_state.running,
     )
 
     selected_source = None
     source_label    = ""
-    rtsp_ready      = False   # RTSP URL이 유효한지 여부
+    source_ready    = False
 
     # ── 로컬 파일 ────────────────────────────────────
     if source_type == "📁 로컬 영상 파일":
@@ -109,65 +221,48 @@ with st.sidebar:
             )
             selected_source = os.path.join(DATA_DIR, chosen)
             source_label    = os.path.splitext(chosen)[0]
-            rtsp_ready      = True
+            source_ready    = True
         else:
-            st.warning(
-                "⚠️ `data/` 폴더에 영상 파일이 없습니다.\n"
-                "`.mp4` 파일을 넣어주세요."
-            )
+            st.warning("⚠️ `data/` 폴더에 `.mp4` 파일을 넣어주세요.")
 
     # ── RTSP ─────────────────────────────────────────
     else:
-        st.markdown("**RTSP 주소 입력**")
         st.caption(
-            "형식: `rtsp://아이디:비밀번호@IP주소:554/경로`\n\n"
-            "예: `rtsp://admin:1234@192.168.0.100:554/Streaming/Channels/402`"
+            "형식: `rtsp://아이디:비밀번호@IP:554/경로`\n\n"
+            "예시: `rtsp://admin:1234@192.168.0.100:554/Streaming/Channels/402`"
         )
-
         rtsp_url = st.text_input(
             "RTSP 주소",
-            value=st.session_state.get("rtsp_url_saved", ""),
+            value=st.session_state.rtsp_url_saved,
             placeholder="rtsp://admin:1234@192.168.0.100:554/Streaming/Channels/402",
             disabled=st.session_state.running,
             label_visibility="collapsed",
         )
-        # 입력값을 session_state에 저장 (페이지 리렌더링 시 유지)
-        st.session_state["rtsp_url_saved"] = rtsp_url
+        st.session_state.rtsp_url_saved = rtsp_url
 
-        # 카메라 이름 (ROI 연결용)
         cam_name = st.text_input(
-            "카메라 이름 (ROI 저장 이름과 동일하게)",
-            value=st.session_state.get("rtsp_cam_name", "rtsp_stream"),
+            "카메라 이름 (ROI 저장 이름과 동일)",
+            value=st.session_state.rtsp_cam_name,
             disabled=st.session_state.running,
-            help="ROI 설정 페이지에서 지정한 이름과 동일해야 ROI가 자동 로드됩니다.",
+            help="ROI 설정 페이지의 이름과 같아야 ROI가 자동 로드됩니다.",
         )
-        st.session_state["rtsp_cam_name"] = cam_name
+        st.session_state.rtsp_cam_name = cam_name
 
-        # URL 유효성 실시간 표시
-        valid, err_msg = validate_rtsp_url(rtsp_url)
+        valid, err = validate_rtsp_url(rtsp_url)
         if rtsp_url and not valid:
-            st.error(f"⛔ {err_msg}")
+            st.error(f"⛔ {err}")
         elif valid:
             st.success("✅ 주소 형식 OK")
 
-        # 연결 테스트 버튼
-        test_btn = st.button(
-            "🔌 연결 테스트",
-            disabled=not valid or st.session_state.running,
-            help="실제로 연결해서 첫 프레임을 받아봅니다 (최대 5초 소요)",
-        )
-        if test_btn:
-            with st.spinner("RTSP 연결 테스트 중... (최대 5초)"):
+        if st.button("🔌 연결 테스트", disabled=not valid or st.session_state.running):
+            with st.spinner("연결 테스트 중... (최대 5초)"):
                 ok, msg = test_rtsp_connection(rtsp_url)
-            if ok:
-                st.success(f"✅ {msg}")
-            else:
-                st.error(f"❌ {msg}")
+            (st.success if ok else st.error)(f"{'✅' if ok else '❌'} {msg}")
 
         if valid:
             selected_source = rtsp_url
             source_label    = cam_name
-            rtsp_ready      = True
+            source_ready    = True
 
     st.markdown("---")
 
@@ -176,302 +271,303 @@ with st.sidebar:
     if roi_polygon is not None:
         st.success(f"✅ ROI 로드됨 ({len(roi_polygon)}개 꼭짓점)")
     else:
-        st.warning(
-            "⚠️ ROI 미설정\n\n"
-            "ROI 없이도 실행되지만 위험 판단이 비활성화됩니다.\n"
-            "**ROI 설정** 페이지에서 먼저 설정하세요."
-        )
+        st.warning("⚠️ ROI 미설정 — 위험 판단 비활성화\n\nROI 설정 페이지에서 먼저 설정하세요.")
 
     st.markdown("---")
 
-    # ── 신뢰도 슬라이더 ──────────────────────────────
     conf_threshold = st.slider(
-        "탐지 신뢰도 임계값",
-        min_value=0.1, max_value=0.9, value=0.4, step=0.05,
+        "탐지 신뢰도",
+        0.1, 0.9, 0.4, 0.05,
         disabled=st.session_state.running,
     )
 
     st.markdown("---")
 
-    # ── 시작 / 정지 버튼 ─────────────────────────────
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        start_btn = st.button(
-            "▶ 시작",
-            use_container_width=True,
-            disabled=st.session_state.running or not rtsp_ready,
-            type="primary",
-        )
-    with btn_col2:
-        stop_btn = st.button(
-            "⏹ 정지",
-            use_container_width=True,
-            disabled=not st.session_state.running,
-        )
+    # ── 시작 / 정지 ───────────────────────────────────
+    c1, c2 = st.columns(2)
+    start_btn = c1.button(
+        "▶ 시작",
+        use_container_width=True,
+        disabled=st.session_state.running or not source_ready,
+        type="primary",
+    )
+    stop_btn  = c2.button(
+        "⏹ 정지",
+        use_container_width=True,
+        disabled=not st.session_state.running,
+    )
 
-    # ── 실행 중 상태 표시 ─────────────────────────────
     if st.session_state.running:
-        st.metric("실시간 FPS",  f"{st.session_state.fps_display}")
-        st.metric("처리 프레임", f"{st.session_state.frame_idx}")
-        if st.session_state.reconnect_msg:
-            st.warning(st.session_state.reconnect_msg)
+        st.metric("FPS",  st.session_state.fps_display)
+        st.metric("프레임", st.session_state.frame_idx)
 
-# ── 시작 버튼 처리 ────────────────────────────────────
+
+# ══════════════════════════════════════════════════════
+# 시작 처리
+# ══════════════════════════════════════════════════════
 if start_btn and selected_source:
 
-    # 1) 모델 로드 (처음 한 번만)
+    # 1) 모델 로드 (최초 1회)
     if st.session_state.detector is None:
-        with st.spinner("🔄 YOLOv8 모델 로딩 중... (첫 실행 시 자동 다운로드)"):
+        with st.spinner("🔄 YOLOv8 모델 로딩 중... (첫 실행 시 자동 다운로드, 1~2분 소요)"):
             st.session_state.detector = Detector()
         if not st.session_state.detector.loaded:
-            st.error(
-                f"❌ 모델 로드 실패: {st.session_state.detector.load_error}\n\n"
-                "`pip install ultralytics` 를 실행하세요."
-            )
+            st.error(f"❌ 모델 로드 실패: {st.session_state.detector.load_error}\n\n`pip install ultralytics` 실행 후 재시도하세요.")
             st.stop()
 
-    # 2) RTSP면 URL 재검증
-    if source_type == "📡 RTSP 스트림 (자택 CCTV)":
-        valid, err_msg = validate_rtsp_url(selected_source)
+    is_rtsp = source_type == "📡 RTSP (자택 CCTV)"
+    buf_size = max(int(25 * CLIP_BUFFER_SEC * 2), 30)
+
+    if is_rtsp:
+        # RTSP: 백그라운드 스레드 방식
+        valid, err = validate_rtsp_url(selected_source)
         if not valid:
-            st.error(f"❌ RTSP 주소 오류: {err_msg}")
+            st.error(f"❌ {err}")
             st.stop()
 
-    # 3) VideoSource 열기
-    vs = VideoSource(selected_source)
-    with st.spinner(
-        "📡 RTSP 연결 중..." if vs.is_rtsp else "📂 영상 파일 열기 중..."
-    ):
-        opened = vs.open()
+        with st.spinner("📡 RTSP 연결 중... (최대 6초)"):
+            reader = RTSPThreadReader(selected_source)
+            ok, err_msg = reader.start()
 
-    if not opened:
-        if vs.is_rtsp:
+        if not ok:
             st.error(
-                "❌ RTSP 연결 실패\n\n"
+                f"❌ RTSP 연결 실패: {err_msg}\n\n"
                 "**체크리스트:**\n"
-                "- DVR/NVR이 켜져 있는지 확인\n"
-                "- 공인 IP와 포트(554) 포워딩 설정 확인\n"
-                "- ID·비밀번호·채널 경로 재확인\n"
-                "- 방화벽에서 TCP 554 포트 허용 확인\n\n"
-                "위 **연결 테스트** 버튼으로 먼저 확인해보세요."
+                "- DVR/NVR 전원 확인\n"
+                "- 공인 IP·포트 포워딩(554) 확인\n"
+                "- ID·비밀번호·채널 경로 확인\n"
+                "- 방화벽 TCP 554 허용 확인\n\n"
+                "사이드바 **연결 테스트** 버튼으로 먼저 확인하세요."
             )
-        else:
-            st.error("❌ 영상 파일을 열 수 없습니다. 경로를 확인하세요.")
-        st.stop()
+            reader.stop()
+            st.stop()
 
-    # 4) 세션 상태 초기화 후 실행 시작
-    buf_fps  = vs.get_fps()
-    buf_size = int(buf_fps * CLIP_BUFFER_SEC * 2)
+        st.session_state.rtsp_reader   = reader
+        st.session_state.video_source  = None
+
+    else:
+        # 파일: 직접 VideoSource
+        vs = VideoSource(selected_source)
+        with st.spinner("📂 영상 파일 열기 중..."):
+            opened = vs.open()
+        if not opened:
+            st.error("❌ 영상 파일을 열 수 없습니다. data/ 폴더 경로를 확인하세요.")
+            st.stop()
+        st.session_state.video_source = vs
+        st.session_state.rtsp_reader  = None
 
     st.session_state.update({
-        "video_source":  vs,
-        "source_name":   source_label,
-        "frame_idx":     0,
-        "prev_danger":   False,
-        "frame_buffer":  deque(maxlen=max(buf_size, 20)),
-        "fps_timer":     time.time(),
-        "fps_count":     0,
-        "fps_display":   0.0,
-        "running":       True,
-        "reconnect_msg": "",
+        "is_rtsp":        is_rtsp,
+        "source_name":    source_label,
+        "frame_idx":      0,
+        "prev_danger":    False,
+        "frame_buffer":   deque(maxlen=buf_size),
+        "fps_timer":      time.time(),
+        "fps_count":      0,
+        "fps_display":    0.0,
+        "running":        True,
+        "last_good_frame": None,
+        "alert_msg":      "",
+        "alert_expires":  0.0,
     })
     st.rerun()
 
-# ── 정지 버튼 처리 ────────────────────────────────────
+
+# ══════════════════════════════════════════════════════
+# 정지 처리
+# ══════════════════════════════════════════════════════
 if stop_btn:
-    vs = st.session_state.video_source
-    if vs:
-        vs.release()
-    st.session_state.update({
-        "running":      False,
-        "video_source": None,
-        "reconnect_msg": "",
-    })
+    stop_all()
     st.rerun()
 
-# ── 메인 레이아웃 ──────────────────────────────────────
-st.title("🎥 실시간 모니터링")
 
+# ══════════════════════════════════════════════════════
+# 메인 레이아웃 플레이스홀더
+# ══════════════════════════════════════════════════════
+st.title("🎥 실시간 모니터링")
 main_col, status_col = st.columns([3, 1])
+
+with main_col:
+    frame_ph = st.empty()
+    info_ph  = st.empty()
 
 with status_col:
     status_ph = st.empty()
     alert_ph  = st.empty()
     events_ph = st.empty()
 
-with main_col:
-    frame_ph  = st.empty()
-    info_ph   = st.empty()
 
-# ── 대기 화면 (실행 중 아닐 때) ───────────────────────
+# ══════════════════════════════════════════════════════
+# 대기 화면
+# ══════════════════════════════════════════════════════
 if not st.session_state.running:
-    frame_ph.info(
-        "▶ 왼쪽 사이드바에서 영상 소스를 선택하고 **시작** 버튼을 누르세요.\n\n"
-        "RTSP 사용 시 **연결 테스트** 버튼으로 먼저 연결을 확인하세요."
-    )
+    frame_ph.info("▶ 왼쪽 사이드바에서 소스를 선택하고 **시작**을 누르세요.")
     status_ph.markdown("""
     <div style='background:#1e3a1e;padding:20px;border-radius:10px;text-align:center;'>
         <h2 style='color:#4caf50;margin:0'>🟢 대기 중</h2>
-    </div>
-    """, unsafe_allow_html=True)
-    events_ph.markdown("### 📋 최근 이벤트")
+    </div>""", unsafe_allow_html=True)
     recent = get_recent_events(5)
     if recent:
+        lines = "### 📋 최근 이벤트\n"
         for ev in recent:
-            events_ph.markdown(
-                f"- `{ev['timestamp'][:19]}` — **{ev['status']}** — `{ev['source']}`"
-            )
+            lines += f"- `{ev['timestamp'][:19]}` **{ev['status']}** `{ev['source']}`\n"
+        events_ph.markdown(lines)
     else:
-        events_ph.caption("이벤트 없음")
+        events_ph.caption("저장된 이벤트 없음")
     st.stop()
 
-# ── 프레임 처리 (실행 중) ──────────────────────────────
-vs       = st.session_state.video_source
-detector = st.session_state.detector
 
-# VideoSource가 사라진 경우 (비정상 종료 등)
-if vs is None or not vs.is_open():
-    st.session_state.running = False
+# ══════════════════════════════════════════════════════
+# ★ 프레임 처리 루프 (실행 중)
+# ★ while 루프 사용 → 페이지 새로고침 없음 → 깜빡임 없음
+# ══════════════════════════════════════════════════════
+is_rtsp      = st.session_state.is_rtsp
+rtsp_reader  = st.session_state.rtsp_reader
+vs           = st.session_state.video_source
+detector     = st.session_state.detector
+
+# 소스가 사라진 경우 안전하게 종료
+if is_rtsp and (rtsp_reader is None or not rtsp_reader.is_alive):
+    stop_all()
+    st.warning("⚠️ RTSP 스레드가 종료됐습니다. 다시 시작하세요.")
+    st.stop()
+
+if not is_rtsp and (vs is None or not vs.is_open()):
+    stop_all()
     st.warning("⚠️ 영상 소스 연결이 끊어졌습니다. 다시 시작하세요.")
     st.stop()
 
-# 프레임 읽기
-ret, frame = vs.read_frame()
-
-# ── 프레임 읽기 실패 처리 ──────────────────────────────
-if not ret:
-    if vs.is_rtsp:
-        # RTSP: 자동 재연결 시도
-        st.session_state.reconnect_msg = "⚠️ 스트림 끊김 — 재연결 시도 중..."
-        reconnected = vs.reconnect(max_attempts=3, wait_sec=2.0)
-        if reconnected:
-            st.session_state.reconnect_msg = "✅ 재연결 성공"
-            st.rerun()
-        else:
-            st.session_state.running = False
-            st.session_state.reconnect_msg = ""
-            st.error(
-                "❌ RTSP 재연결 실패 (3회 시도)\n\n"
-                "DVR/카메라 상태와 네트워크를 확인 후 다시 시작하세요."
-            )
-            st.stop()
-    else:
-        # 파일: 처음으로 되감기
-        vs.reset()
-        ret, frame = vs.read_frame()
-        if not ret:
-            st.session_state.running = False
-            st.error("❌ 영상 파일 읽기 실패.")
-            st.stop()
-
-# ── 프레임 분석 ────────────────────────────────────────
-st.session_state.frame_idx += 1
-frame_idx   = st.session_state.frame_idx
+# ROI는 루프 밖에서 한 번만 로드 (매 프레임마다 파일 읽기 방지)
 roi_polygon = load_roi(st.session_state.source_name)
 
-# FRAME_SKIP마다 한 번 YOLO 실행 (성능 최적화)
-if frame_idx % FRAME_SKIP == 0 or frame_idx == 1:
-    detections = detector.detect(frame, conf=conf_threshold)
-else:
-    detections = []
+while st.session_state.running:
 
-danger_result = check_danger(detections, roi_polygon)
-is_danger     = danger_result["is_danger"]
+    # ── 프레임 획득 ────────────────────────────────────
+    if is_rtsp:
+        # 스레드에서 최신 프레임 꺼내기 — 즉시 반환, 블로킹 없음
+        frame = rtsp_reader.get_latest_frame()
+        ret   = frame is not None
+        if not ret and rtsp_reader.error:
+            stop_all()
+            st.error(f"❌ RTSP 오류: {rtsp_reader.error}")
+            break
+    else:
+        ret, frame = vs.read_frame()
+        if not ret:
+            vs.reset()   # 파일 끝 → 처음으로 되감고 계속 재생
+            continue
 
-# ── 이벤트 감지 (정상 → 위험 전환) ───────────────────
-event_triggered = False
-now = time.time()
+    # ── 새 프레임이 없을 때: 마지막 프레임 재사용 (빈 화면 방지) ──
+    if not ret or frame is None:
+        frame = st.session_state.last_good_frame
+        if frame is None:
+            time.sleep(0.02)
+            continue
+        is_new_frame = False
+    else:
+        st.session_state.last_good_frame = frame
+        is_new_frame = True
 
-if is_danger and not st.session_state.prev_danger:
-    if now - st.session_state.last_event_ts > 1.0:   # 1초 중복 방지
-        event_triggered                    = True
-        st.session_state.last_event_ts     = now
-        st.session_state.alert_msg         = "🚨 위험! 보행자 감지"
-        st.session_state.alert_expires     = now + 3.0
+    # ── 객체 탐지 (FRAME_SKIP마다 실행) ─────────────────
+    st.session_state.frame_idx += 1
+    frame_idx = st.session_state.frame_idx
 
-st.session_state.prev_danger = is_danger
+    if is_new_frame and (frame_idx % FRAME_SKIP == 0 or frame_idx == 1):
+        detections = detector.detect(frame, conf=conf_threshold)
+    else:
+        detections = []
 
-# ── 프레임 시각화 ──────────────────────────────────────
-annotated = frame.copy()
-annotated = draw_detections(annotated, danger_result, roi_polygon)
+    # ── 위험 판단 ──────────────────────────────────────
+    danger_result = check_danger(detections, roi_polygon)
+    is_danger     = danger_result["is_danger"]
 
-if is_danger:
+    # ── 이벤트 감지 (정상 → 위험 전환 순간만) ─────────────
+    now = time.time()
+    event_triggered = False
+    if is_danger and not st.session_state.prev_danger:
+        if now - st.session_state.last_event_ts > 2.0:   # 2초 쿨다운
+            event_triggered                = True
+            st.session_state.last_event_ts = now
+            st.session_state.alert_msg     = "🚨 위험! 보행자 감지"
+            st.session_state.alert_expires = now + 3.0
+
+    st.session_state.prev_danger = is_danger
+
+    # ── 프레임 시각화 ──────────────────────────────────
+    annotated = frame.copy()
+    annotated = draw_detections(annotated, danger_result, roi_polygon)
+
+    if is_danger:
+        cv2.putText(
+            annotated, "DANGER - PEDESTRIAN DETECTED",
+            (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+            (0, 0, 220), 2, cv2.LINE_AA,
+        )
+
+    update_fps()
+    src_tag = "[RTSP]" if is_rtsp else "[FILE]"
     cv2.putText(
-        annotated, "DANGER - PEDESTRIAN DETECTED",
-        (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
-        (0, 0, 220), 2, cv2.LINE_AA,
+        annotated,
+        f"FPS:{st.session_state.fps_display}  F:{frame_idx}  {src_tag}",
+        (10, annotated.shape[0] - 10),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1, cv2.LINE_AA,
     )
 
-# FPS + 프레임 번호 오버레이
-update_fps()
-cv2.putText(
-    annotated,
-    f"FPS:{st.session_state.fps_display}  F:{frame_idx}"
-    + ("  [RTSP]" if vs.is_rtsp else "  [FILE]"),
-    (10, annotated.shape[0] - 10),
-    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1, cv2.LINE_AA,
-)
+    # ── 이벤트 저장 ────────────────────────────────────
+    if event_triggered:
+        img_name, _  = save_event_image(annotated, st.session_state.source_name)
+        clip_name, _ = save_event_clip(
+            st.session_state.frame_buffer,
+            st.session_state.source_name,
+            fps=MAX_CLIP_FPS,
+        )
+        log_event(st.session_state.source_name, img_name, clip_name)
 
-# ── 이벤트 저장 ────────────────────────────────────────
-if event_triggered:
-    img_name, _  = save_event_image(annotated, st.session_state.source_name)
-    clip_name, _ = save_event_clip(
-        st.session_state.frame_buffer,
-        st.session_state.source_name,
-        fps=MAX_CLIP_FPS,
+    st.session_state.frame_buffer.append(annotated.copy())
+
+    # ── 화면 출력 ─────────────────────────────────────
+    # BGR → RGB 변환 후 표시
+    rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+    frame_ph.image(rgb, channels="RGB", use_container_width=True)
+
+    persons = len(danger_result["all_persons"])
+    cars    = len(danger_result["all_cars"])
+    info_ph.caption(
+        f"사람 {persons}명 | 자동차 {cars}대 | "
+        f"ROI {'✅' if roi_polygon is not None else '⚠️ 미설정'} | "
+        f"{st.session_state.source_name}"
     )
-    log_event(st.session_state.source_name, img_name, clip_name)
 
-# 클립 버퍼에 현재 프레임 추가
-st.session_state.frame_buffer.append(annotated.copy())
-
-# ── 화면 출력 ──────────────────────────────────────────
-rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-frame_ph.image(rgb, channels="RGB", use_container_width=True)
-
-persons = len(danger_result["all_persons"])
-cars    = len(danger_result["all_cars"])
-info_ph.caption(
-    f"탐지: 사람 {persons}명 | 자동차 {cars}대 | "
-    f"ROI {'설정됨' if roi_polygon is not None else '⚠️ 미설정'} | "
-    f"소스: {st.session_state.source_name} | "
-    f"{'📡 RTSP' if vs.is_rtsp else '📁 파일'}"
-)
-
-# ── 상태창 ─────────────────────────────────────────────
-with status_col:
+    # ── 상태창 ────────────────────────────────────────
     if is_danger:
         status_ph.markdown("""
         <div style='background:#3a1e1e;padding:20px;border-radius:10px;
                     text-align:center;border:3px solid #dc3545;'>
             <h2 style='color:#ff4444;margin:0'>🔴 경고</h2>
-            <p style='color:#ffaaaa;margin:4px 0 0 0'>보행자 위험 감지!</p>
-        </div>
-        """, unsafe_allow_html=True)
+            <p style='color:#ffaaaa;margin:4px 0 0'>보행자 위험 감지!</p>
+        </div>""", unsafe_allow_html=True)
     else:
         status_ph.markdown("""
         <div style='background:#1e3a1e;padding:20px;border-radius:10px;
                     text-align:center;border:2px solid #28a745;'>
             <h2 style='color:#4caf50;margin:0'>🟢 정상</h2>
-            <p style='color:#aaffaa;margin:4px 0 0 0'>위험 없음</p>
-        </div>
-        """, unsafe_allow_html=True)
+            <p style='color:#aaffaa;margin:4px 0 0'>위험 없음</p>
+        </div>""", unsafe_allow_html=True)
 
-    # 경고 배너 (이벤트 후 3초간)
     if now < st.session_state.alert_expires:
         alert_ph.error(st.session_state.alert_msg)
     else:
         alert_ph.empty()
 
-    # 최근 이벤트 목록
-    recent = get_recent_events(5)
-    if recent:
-        lines = "### 📋 최근 이벤트\n"
-        for ev in recent:
-            lines += f"- `{ev['timestamp'][:19]}` **{ev['status']}**\n"
-        events_ph.markdown(lines)
+    # 최근 이벤트 (이벤트 발생 시에만 갱신 — 매 프레임 갱신 불필요)
+    if event_triggered:
+        recent = get_recent_events(5)
+        if recent:
+            lines = "### 📋 최근 이벤트\n"
+            for ev in recent:
+                lines += f"- `{ev['timestamp'][:19]}` **{ev['status']}**\n"
+            events_ph.markdown(lines)
 
-# 다음 프레임으로
-if st.session_state.running:
-    time.sleep(0.01)
-    st.rerun()
+    # RTSP: 스레드가 제공 속도에 맞게 짧게 대기
+    # 파일: 너무 빠른 재생 방지 (약 30fps 제한)
+    time.sleep(0.001 if is_rtsp else 0.020)
