@@ -151,6 +151,7 @@ def init_state():
         "alert_msg":      "",
         "alert_expires":  0.0,
         "last_good_frame": None,  # 깜빡임 방지용 마지막 정상 프레임
+        "last_detections": [],    # 바운딩 박스 깜빡임 방지용 직전 탐지 결과
         "rtsp_url_saved": "",
         "rtsp_cam_name":  "rtsp_stream",
     }
@@ -474,8 +475,9 @@ while st.session_state.running:
 
     if is_new_frame and (frame_idx % FRAME_SKIP == 0 or frame_idx == 1):
         detections = detector.detect(frame, conf=conf_threshold)
+        st.session_state.last_detections = detections   # 최신 결과 저장
     else:
-        detections = []
+        detections = st.session_state.last_detections    # 직전 결과 유지 (박스 깜빡임 방지)
 
     # ── 위험 판단 ──────────────────────────────────────
     danger_result = check_danger(detections, roi_polygon)
