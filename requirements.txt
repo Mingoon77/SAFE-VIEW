@@ -5,3 +5,4 @@ numpy>=1.24.0
 Pillow>=10.0.0
 streamlit-image-coordinates>=0.1.0
 pandas>=1.5.0
+imageio-ffmpeg>=0.4.0

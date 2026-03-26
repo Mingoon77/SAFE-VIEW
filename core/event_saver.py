@@ -48,9 +48,13 @@ def save_event_clip(frame_buffer: deque, source_name: str, fps: float = MAX_CLIP
     frames = list(frame_buffer)
     h, w = frames[0].shape[:2]
 
-    # mp4v 코덱으로 저장 (Windows 호환)
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    # H.264(avc1) 코덱 → 브라우저에서 바로 재생 가능
+    # avc1 실패 시 mp4v로 폴백
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(filepath, fourcc, float(fps), (w, h))
+    if not writer.isOpened():
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(filepath, fourcc, float(fps), (w, h))
     for f in frames:
         writer.write(f)
     writer.release()

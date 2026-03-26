@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from config import DATA_DIR, FRAME_SKIP, CLIP_BUFFER_SEC, MAX_CLIP_FPS
+from config import DATA_DIR, FRAME_SKIP, CLIP_PRE_SEC, CLIP_POST_SEC, MAX_CLIP_FPS
 from core.detector     import Detector
 from core.roi_manager  import load_roi
 from core.video_source import VideoSource, validate_rtsp_url, test_rtsp_connection
@@ -152,6 +152,11 @@ def init_state():
         "alert_expires":  0.0,
         "last_good_frame": None,  # 깜빡임 방지용 마지막 정상 프레임
         "last_detections": [],    # 바운딩 박스 깜빡임 방지용 직전 탐지 결과
+        "post_recording":  False, # 이벤트 후 녹화 중 여부
+        "post_rec_start":  0.0,   # 후속 녹화 시작 시각
+        "pre_frames":      [],    # 이벤트 전 5초 프레임 스냅샷
+        "post_frames":     [],    # 이벤트 후 10초 프레임 수집
+        "pending_img_name": "",   # 저장 대기 중인 이미지 파일명
         "rtsp_url_saved": "",
         "rtsp_cam_name":  "rtsp_stream",
     }
@@ -284,6 +289,18 @@ with st.sidebar:
 
     st.markdown("---")
 
+    # ── 원격 공유 모드 (ngrok 등) ─────────────────────
+    remote_mode = st.checkbox(
+        "📡 원격 공유 모드 (ngrok)",
+        value=st.session_state.get("remote_mode", False),
+        help="ngrok 등으로 외부 공유 시 체크하세요. 프레임 크기와 전송 속도를 줄여 안정적으로 스트리밍합니다.",
+    )
+    st.session_state.remote_mode = remote_mode
+    if remote_mode:
+        st.caption("해상도 축소 + 5 FPS 제한 적용 중")
+
+    st.markdown("---")
+
     # ── 시작 / 정지 ───────────────────────────────────
     c1, c2 = st.columns(2)
     start_btn = c1.button(
@@ -317,7 +334,7 @@ if start_btn and selected_source:
             st.stop()
 
     is_rtsp = source_type == "📡 RTSP (자택 CCTV)"
-    buf_size = max(int(25 * CLIP_BUFFER_SEC * 2), 30)
+    buf_size = max(int(25 * CLIP_PRE_SEC), 30)  # 이벤트 전 5초 버퍼
 
     if is_rtsp:
         # RTSP: 백그라운드 스레드 방식
@@ -487,7 +504,7 @@ while st.session_state.running:
     now = time.time()
     event_triggered = False
     if is_danger and not st.session_state.prev_danger:
-        if now - st.session_state.last_event_ts > 2.0:   # 2초 쿨다운
+        if now - st.session_state.last_event_ts > 15.0:   # 15초 쿨다운 (후속 녹화 겹침 방지)
             event_triggered                = True
             st.session_state.last_event_ts = now
             st.session_state.alert_msg     = "🚨 위험! 보행자 감지"
@@ -515,21 +532,57 @@ while st.session_state.running:
         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1, cv2.LINE_AA,
     )
 
-    # ── 이벤트 저장 ────────────────────────────────────
-    if event_triggered:
-        img_name, _  = save_event_image(annotated, st.session_state.source_name)
-        clip_name, _ = save_event_clip(
-            st.session_state.frame_buffer,
-            st.session_state.source_name,
-            fps=MAX_CLIP_FPS,
-        )
-        log_event(st.session_state.source_name, img_name, clip_name)
+    # ── 이벤트 저장 (전 5초 + 후 10초) ─────────────────
+    # 1단계: 이벤트 발생 → 이미지 즉시 저장 + 전 5초 프레임 스냅샷 + 후속 녹화 시작
+    if event_triggered and not st.session_state.post_recording:
+        img_name, _ = save_event_image(annotated, st.session_state.source_name)
+        st.session_state.pending_img_name = img_name
+        st.session_state.pre_frames       = list(st.session_state.frame_buffer)
+        st.session_state.post_frames      = []
+        st.session_state.post_recording   = True
+        st.session_state.post_rec_start   = now
 
+    # 2단계: 후속 녹화 중 → 프레임 수집 (10초간)
+    if st.session_state.post_recording:
+        st.session_state.post_frames.append(annotated.copy())
+
+        # 10초 경과 → 전+후 프레임 합쳐서 클립 저장
+        if now - st.session_state.post_rec_start >= CLIP_POST_SEC:
+            all_clip_frames = st.session_state.pre_frames + st.session_state.post_frames
+            clip_name, _ = save_event_clip(
+                deque(all_clip_frames),
+                st.session_state.source_name,
+                fps=MAX_CLIP_FPS,
+            )
+            log_event(
+                st.session_state.source_name,
+                st.session_state.pending_img_name,
+                clip_name,
+            )
+            # 후속 녹화 종료 & 정리
+            st.session_state.post_recording = False
+            st.session_state.pre_frames     = []
+            st.session_state.post_frames    = []
+            st.session_state.pending_img_name = ""
+
+    # 프레임 버퍼에 현재 프레임 추가 (이벤트 전 5초 순환 버퍼)
     st.session_state.frame_buffer.append(annotated.copy())
 
     # ── 화면 출력 ─────────────────────────────────────
+    # 원격 모드: 해상도 축소하여 전송 데이터량 대폭 감소
+    display_frame = annotated
+    if st.session_state.get("remote_mode", False):
+        h_orig, w_orig = display_frame.shape[:2]
+        max_w = 640
+        if w_orig > max_w:
+            ratio = max_w / w_orig
+            display_frame = cv2.resize(
+                display_frame, (max_w, int(h_orig * ratio)),
+                interpolation=cv2.INTER_AREA,
+            )
+
     # BGR → RGB 변환 후 표시
-    rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+    rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
     frame_ph.image(rgb, channels="RGB", use_container_width=True)
 
     persons = len(danger_result["all_persons"])
@@ -570,6 +623,9 @@ while st.session_state.running:
                 lines += f"- `{ev['timestamp'][:19]}` **{ev['status']}**\n"
             events_ph.markdown(lines)
 
-    # RTSP: 스레드가 제공 속도에 맞게 짧게 대기
-    # 파일: 너무 빠른 재생 방지 (약 30fps 제한)
-    time.sleep(0.001 if is_rtsp else 0.020)
+    # 원격 모드: 0.2초 간격(5FPS) → ngrok 대역폭 내에서 안정적 전송
+    # 로컬 모드: RTSP 0.001초 / 파일 0.02초 → 최대 성능
+    if st.session_state.get("remote_mode", False):
+        time.sleep(0.2)
+    else:
+        time.sleep(0.001 if is_rtsp else 0.020)

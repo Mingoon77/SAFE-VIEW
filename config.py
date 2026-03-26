@@ -27,7 +27,8 @@ LOG_FILE        = os.path.join(LOGS_DIR, "events_log.csv")
 
 # ── 영상 처리 설정 ─────────────────────────────────────
 FRAME_SKIP      = 2       # N 프레임마다 1번 YOLO 실행 (부하 감소)
-CLIP_BUFFER_SEC = 5       # 클립 저장 시 앞뒤 몇 초 분량 버퍼 유지
+CLIP_PRE_SEC    = 5       # 이벤트 발생 전 몇 초 저장
+CLIP_POST_SEC   = 10      # 이벤트 발생 후 몇 초 저장
 MAX_CLIP_FPS    = 10      # 저장 클립 FPS
 
 # ── ROI 박스 색상 (BGR) ────────────────────────────────
