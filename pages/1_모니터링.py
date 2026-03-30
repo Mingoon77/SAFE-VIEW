@@ -127,11 +127,7 @@ class RTSPThreadReader:
 # ══════════════════════════════════════════════════════
 # 페이지 설정 & session_state 초기화
 # ══════════════════════════════════════════════════════
-st.set_page_config(
-    page_title="모니터링 | 보행자 위험 감지",
-    page_icon="🎥",
-    layout="wide",
-)
+# st.set_page_config는 app.py에서 1회만 호출 (여기서는 제거)
 
 def init_state():
     defaults = {

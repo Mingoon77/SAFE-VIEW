@@ -27,11 +27,7 @@ except ImportError:
     LIB_OK = False
 
 # ── 페이지 설정 ────────────────────────────────────────
-st.set_page_config(
-    page_title="ROI 설정 | 보행자 위험 감지",
-    page_icon="🗺️",
-    layout="wide",
-)
+# st.set_page_config는 app.py에서 1회만 호출 (여기서는 제거)
 
 if not LIB_OK:
     st.error(

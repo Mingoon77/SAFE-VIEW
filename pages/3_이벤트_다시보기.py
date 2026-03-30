@@ -16,7 +16,7 @@ if ROOT not in sys.path:
 from config import EVENTS_DIR, LOG_FILE
 
 # ── 페이지 설정 ────────────────────────────────────────
-st.set_page_config(page_title="이벤트 다시보기", page_icon="📋", layout="wide")
+# st.set_page_config는 app.py에서 1회만 호출 (여기서는 제거)
 
 st.title("📋 이벤트 다시보기")
 st.markdown("캘린더에서 날짜를 선택하면 해당 날짜에 기록된 위험 이벤트를 확인할 수 있습니다.")
