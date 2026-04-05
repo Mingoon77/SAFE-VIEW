@@ -16,24 +16,99 @@ if ROOT not in sys.path:
 from config import EVENTS_DIR, LOG_FILE
 
 # ── 페이지 설정 ────────────────────────────────────────
-# st.set_page_config는 app.py에서 1회만 호출 (여기서는 제거)
+# st.set_page_config는 app.py에서 1회만 호출
 
-st.title("📋 이벤트 다시보기")
-st.markdown("캘린더에서 날짜를 선택하면 해당 날짜에 기록된 위험 이벤트를 확인할 수 있습니다.")
-st.markdown("---")
+# 🚀 [스트림릿 뼈대 파괴 CSS] 버튼을 진짜 달력 칸으로, 이벤트를 알림 카드로 개조
+st.markdown("""
+    <style>
+    /* 1. 전체 배경색: 맥북 스타일의 아주 연한 회색 */
+    .stApp { background-color: #F4F7F9; font-family: 'Pretendard', sans-serif; }
+    
+    /* 2. 상단 여백 다이어트 */
+    .block-container { padding-top: 2rem !important; padding-bottom: 2rem !important; }
+    
+    /* 3. 스트림릿 컬럼 갭(Gap) 압축: 캘린더 틈새를 좁혀 한 덩어리처럼 */
+    [data-testid="column"] { padding: 0 4px !important; }
+    
+    /* 4. 요일 헤더 디자인: 캘린더 윗부분 */
+    .day-header {
+        text-align: center; font-weight: 700; font-size: 0.9rem;
+        padding-bottom: 10px; margin-bottom: 5px;
+        color: #64748B; text-transform: uppercase; letter-spacing: 1px;
+    }
+    
+    /* 5. ⭐️ 핵심: 알약 버튼을 진짜 [캘린더 칸(Cell)]으로 개조 */
+    button {
+        width: 100% !important;
+        height: 75px !important; /* 높이를 확 키워서 캘린더 칸처럼 만듦 */
+        border-radius: 8px !important; /* 살짝만 둥근 모던한 사각형 */
+        font-size: 1.1rem !important;
+        margin: 0 !important;
+    }
+    
+    /* 일반 날짜 칸 */
+    button[kind="secondary"] {
+        background-color: #FFFFFF !important;
+        border: 1px solid #E2E8F0 !important;
+        color: #334155 !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.02) !important;
+        transition: all 0.2s ease-in-out !important;
+        display: flex; align-items: flex-start; justify-content: flex-start;
+    }
+    
+    /* 날짜 칸에 마우스 올렸을 때 (호버) */
+    button[kind="secondary"]:hover {
+        background-color: #F0F9FF !important; /* 아주 연한 스카이블루 */
+        border: 2px solid #0EA5E9 !important;
+        color: #0284C7 !important;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(14, 165, 233, 0.15) !important;
+        z-index: 10;
+    }
+    
+    /* 선택된 날짜 (딥 네이비 관제 시스템 컬러) */
+    button[kind="primary"] {
+        background: linear-gradient(135deg, #0F172A 0%, #334155 100%) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        font-weight: 800 !important;
+        box-shadow: 0 6px 15px rgba(15, 23, 42, 0.3) !important;
+    }
+    
+    /* 6. ⭐️ 이벤트 목록 상세 박스 (Expander)를 보안 알림 카드로 개조 */
+    [data-testid="stExpander"] {
+        background-color: #FFFFFF !important;
+        border-radius: 12px !important;
+        border: none !important;
+        border-left: 6px solid #EF4444 !important; /* 좌측에 강렬한 빨간색 경고 띠 */
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03) !important;
+        margin-bottom: 15px !important;
+        overflow: hidden;
+    }
+    
+    /* 7. 메트릭 통계 박스 */
+    [data-testid="metric-container"] {
+        background: #FFFFFF; border-radius: 12px; padding: 15px;
+        border: 1px solid #E2E8F0; box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    }
+    </style>
+""", unsafe_allow_html=True)
 
+
+# 💡 텍스트 수정: 통합 관제 대시보드 -> 감시 기록 다시보기
+st.markdown("<h1 style='color: #0F172A; font-size: 2.2rem; font-weight: 800;'>🛡️ 감시 기록 다시보기</h1>", unsafe_allow_html=True)
+st.markdown("<p style='color: #64748B; font-size: 1.05rem;'>보안 시스템에 기록된 위험 이벤트를 캘린더 기반으로 추적하고 분석합니다.</p>", unsafe_allow_html=True)
+st.markdown("<hr style='border: 1px solid #E2E8F0; margin-top: 10px; margin-bottom: 30px;'>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════
 # 데이터 로딩
 # ══════════════════════════════════════════════════════
 def load_all_events():
-    if not os.path.exists(LOG_FILE):
-        return []
+    if not os.path.exists(LOG_FILE): return []
     try:
         with open(LOG_FILE, "r", encoding="utf-8-sig") as f:
             return list(csv.DictReader(f))
-    except Exception:
-        return []
+    except Exception: return []
 
 def get_events_by_date(events, target):
     s = target.strftime("%Y-%m-%d")
@@ -44,115 +119,71 @@ def get_dates_with_events(events):
     for ev in events:
         ts = ev.get("timestamp", "")
         if len(ts) >= 10:
-            try:
-                dates.add(datetime.strptime(ts[:10], "%Y-%m-%d").date())
-            except ValueError:
-                pass
+            try: dates.add(datetime.strptime(ts[:10], "%Y-%m-%d").date())
+            except ValueError: pass
     return dates
 
-
-# ── 영상 변환: mp4v → H.264 (브라우저 재생 가능) ──────
+# ── 영상 변환 ──────
 CONVERTED_DIR = os.path.join(EVENTS_DIR, "_converted")
 os.makedirs(CONVERTED_DIR, exist_ok=True)
 
 def get_playable_video(clip_path: str) -> str | None:
-    """
-    브라우저에서 재생 가능한 H.264 영상 경로를 반환합니다.
-    이미 변환된 파일이 있으면 캐시된 파일을 반환합니다.
-    """
     filename = os.path.basename(clip_path)
     converted_path = os.path.join(CONVERTED_DIR, filename)
-
-    # 이미 변환된 파일이 있으면 바로 반환
-    if os.path.exists(converted_path):
-        return converted_path
-
-    # ffmpeg로 H.264 변환
+    if os.path.exists(converted_path): return converted_path
     try:
         from imageio_ffmpeg import get_ffmpeg_exe
         ffmpeg = get_ffmpeg_exe()
-    except ImportError:
-        return None
+        subprocess.run([ffmpeg, "-y", "-i", clip_path, "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-movflags", "+faststart", "-an", converted_path], capture_output=True, timeout=30)
+        return converted_path if os.path.exists(converted_path) else None
+    except Exception: return None
 
-    try:
-        result = subprocess.run(
-            [
-                ffmpeg, "-y",
-                "-i", clip_path,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "23",
-                "-movflags", "+faststart",   # 웹 스트리밍 최적화
-                "-an",                        # 오디오 없음 (CCTV)
-                converted_path,
-            ],
-            capture_output=True,
-            timeout=30,
-        )
-        if result.returncode == 0 and os.path.exists(converted_path):
-            return converted_path
-    except Exception:
-        pass
-    return None
-
-
-# ══════════════════════════════════════════════════════
-# 전체 이벤트 로드
-# ══════════════════════════════════════════════════════
 all_events = load_all_events()
 event_dates = get_dates_with_events(all_events)
 
 if not all_events:
-    st.info("📭 저장된 이벤트가 없습니다.\n\n모니터링에서 위험 감지가 발생하면 여기에 기록됩니다.")
+    st.info("📭 저장된 이벤트가 없습니다. 모니터링에서 위험 감지가 발생하면 기록됩니다.")
     st.stop()
 
-st.success(f"총 **{len(all_events)}건**의 이벤트가 기록되어 있습니다.")
-
-
-# ══════════════════════════════════════════════════════
-# session_state 초기화
-# ══════════════════════════════════════════════════════
 if "sel_date" not in st.session_state:
     st.session_state.sel_date = date.today()
-
 
 # ══════════════════════════════════════════════════════
 # 사이드바: 날짜 선택
 # ══════════════════════════════════════════════════════
 with st.sidebar:
-    st.header("📅 날짜 선택")
-
-    new_date = st.date_input(
-        "날짜 선택",
-        value=st.session_state.sel_date,
-    )
+    st.markdown("<h3 style='color: #0F172A;'>📅 탐색 필터</h3>", unsafe_allow_html=True)
+    new_date = st.date_input("특정 일자 검색", value=st.session_state.sel_date)
     if new_date != st.session_state.sel_date:
         st.session_state.sel_date = new_date
         st.rerun()
 
-    st.markdown("---")
-    st.subheader("📊 통계")
-    st.metric("전체 이벤트", f"{len(all_events)}건")
-    st.metric("기록된 날짜 수", f"{len(event_dates)}일")
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color: #0F172A;'>📊 관제 요약</h3>", unsafe_allow_html=True)
+    st.metric("누적 위험 감지", f"{len(all_events)}건")
+    # 💡 텍스트 수정: 로그 발생 일수 -> 위험 감지 일수
+    st.metric("위험 감지 일수", f"{len(event_dates)}일")
 
 
 # ══════════════════════════════════════════════════════
-# 캘린더 그리드
+# 💎 캘린더 그리드 (리얼 캘린더 모양 개조)
 # ══════════════════════════════════════════════════════
 sel = st.session_state.sel_date
-st.subheader(f"📅 {sel.year}년 {sel.month}월")
+# 💡 텍스트 수정: 관제 기록 -> 감시 기록
+st.markdown(f"<h3 style='color: #0F172A; margin-bottom: 20px;'>🗓️ {sel.year}년 {sel.month}월 감시 기록</h3>", unsafe_allow_html=True)
 
 cal_obj = calendar.Calendar(firstweekday=6)
 weeks = cal_obj.monthdayscalendar(sel.year, sel.month)
 
 day_names = ["일", "월", "화", "수", "목", "금", "토"]
 hcols = st.columns(7)
+
+# 요일 헤더
 for i, name in enumerate(day_names):
-    color = "#ff6b6b" if i == 0 else ("#6ba3ff" if i == 6 else "#ffffff")
-    hcols[i].markdown(
-        f"<div style='text-align:center;font-weight:bold;color:{color}'>{name}</div>",
-        unsafe_allow_html=True,
-    )
+    if i == 0: color = "#EF4444" # 빨강
+    elif i == 6: color = "#3B82F6" # 파랑
+    else: color = "#64748B"
+    hcols[i].markdown(f"<div class='day-header' style='color:{color};'>{name}</div>", unsafe_allow_html=True)
 
 for week in weeks:
     cols = st.columns(7)
@@ -163,7 +194,9 @@ for week in weeks:
         d = date(sel.year, sel.month, day)
         has = d in event_dates
         is_sel = d == sel
-        label = f"🔴 {day}" if has else f"{day}"
+        
+        # 감지된 날짜는 빨간색 알림 점(🔴)으로 확실하게 표시
+        label = f"{day} 🔴" if has else f"{day}"
 
         if cols[i].button(
             label,
@@ -174,22 +207,24 @@ for week in weeks:
             st.session_state.sel_date = d
             st.rerun()
 
-st.caption("🔴 = 이벤트 있음  |  강조 = 선택된 날짜")
+st.caption("🔴 = 위험 상황 감지됨  |  짙은 네이비 = 현재 선택된 날짜")
 
 
 # ══════════════════════════════════════════════════════
-# 이벤트 목록
+# 이벤트 목록 (보안 카드 UI)
 # ══════════════════════════════════════════════════════
-st.markdown("---")
-st.subheader(f"📂 {sel.strftime('%Y년 %m월 %d일')} 이벤트")
+st.markdown("<br>", unsafe_allow_html=True)
+# 💡 텍스트 수정: 상세 리포트 -> 상세 감시 기록
+st.markdown(f"<h3 style='color: #0F172A; border-bottom: 2px solid #E2E8F0; padding-bottom: 10px;'>🚨 {sel.strftime('%Y-%m-%d')} 상세 감시 기록</h3>", unsafe_allow_html=True)
 
 day_events = get_events_by_date(all_events, sel)
 
 if not day_events:
-    st.info(f"{sel.strftime('%Y-%m-%d')}에 기록된 이벤트가 없습니다.")
+    st.info("해당 일자에 기록된 보안 이벤트가 없습니다.")
     st.stop()
 
-st.markdown(f"**{len(day_events)}건**의 이벤트")
+st.markdown(f"**<span style='color:#EF4444; font-size:1.1rem;'>총 {len(day_events)}건</span>**의 위험 상황이 타임라인에 기록되었습니다.", unsafe_allow_html=True)
+st.write("")
 
 for idx, ev in enumerate(day_events):
     timestamp = ev.get("timestamp", "")
@@ -199,90 +234,61 @@ for idx, ev in enumerate(day_events):
     clip_file = ev.get("clip_file", "")
     time_str  = timestamp[11:19] if len(timestamp) >= 19 else timestamp
 
-    # ── 썸네일 + 정보 한 줄 ──────────────────────────
-    thumb_col, info_col = st.columns([1, 3])
+    thumb_col, info_col = st.columns([1, 4])
 
     with thumb_col:
         img_path = os.path.join(EVENTS_DIR, img_file) if img_file else ""
         has_img = img_file and os.path.exists(img_path)
         if has_img:
-            st.image(img_path, width=200)
+            st.image(img_path, use_container_width=True)
 
     with info_col:
-        st.markdown(f"**⏱ {time_str}** — 🔴 {status} — 소스: `{source}`")
-        if clip_file:
-            cp = os.path.join(EVENTS_DIR, clip_file)
-            if os.path.exists(cp):
-                size_mb = os.path.getsize(cp) / (1024 * 1024)
-                st.caption(f"🎬 클립 {size_mb:.1f} MB")
+        st.markdown(f"<h4 style='color:#0F172A; margin:0;'>⏱ {time_str}</h4>", unsafe_allow_html=True)
+        st.markdown(f"<p style='margin-top:5px;'><span style='background-color:#FEE2E2; color:#DC2626; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:0.85rem;'>{status}</span> &nbsp; | &nbsp; <b>채널:</b> {source}</p>", unsafe_allow_html=True)
 
-    # ── 상세 보기 (expander) ─────────────────────────
-    with st.expander(f"🔍 상세 보기 — {time_str}", expanded=False):
-        tab_img, tab_clip, tab_info = st.tabs(["📷 사진", "🎬 영상 클립", "ℹ️ 정보"])
+    # 💡 텍스트 수정: 원본 영상 및 메타데이터 열람 -> 원본 영상
+    with st.expander(f"🔍 [ {time_str} ] 원본 영상", expanded=False):
+        tab_img, tab_clip, tab_info = st.tabs(["📷 스냅샷", "🎬 클립 재생", "ℹ️ 데이터"])
 
         with tab_img:
-            if has_img:
-                st.image(img_path, caption=img_file, use_container_width=True)
-            else:
-                st.caption("이미지 없음")
+            if has_img: st.image(img_path, use_container_width=True)
+            else: st.caption("이미지 없음")
 
         with tab_clip:
             if clip_file:
                 clip_path = os.path.join(EVENTS_DIR, clip_file)
                 if os.path.exists(clip_path):
-                    # H.264로 변환하여 브라우저에서 바로 재생
-                    with st.spinner("영상 준비 중..."):
+                    with st.spinner("미디어 로딩 중..."):
                         playable = get_playable_video(clip_path)
 
                     if playable:
-                        with open(playable, "rb") as vf:
-                            st.video(vf.read())
-                        st.caption("💡 우클릭 → 재생 속도에서 1.5x~2x 설정 가능")
+                        with open(playable, "rb") as vf: st.video(vf.read())
                     else:
-                        st.warning(
-                            "브라우저 재생을 위한 변환에 실패했습니다.\n"
-                            "아래 버튼으로 다운로드 후 VLC 등으로 재생하세요."
-                        )
+                        st.error("스트리밍 변환 실패. 다운로드하여 확인하세요.")
                         with open(clip_path, "rb") as vf:
-                            st.download_button(
-                                "💾 원본 다운로드",
-                                data=vf,
-                                file_name=clip_file,
-                                mime="video/mp4",
-                                key=f"dl_{idx}",
-                            )
-                else:
-                    st.warning(f"파일 없음: {clip_file}")
+                            st.download_button("💾 파일 다운로드", data=vf, file_name=clip_file, mime="video/mp4", key=f"dl_{idx}")
             else:
                 st.caption("영상 클립 없음")
 
         with tab_info:
             st.markdown(f"""
-| 항목 | 내용 |
-|------|------|
-| **시간** | {timestamp} |
-| **소스** | {source} |
-| **상태** | {status} |
-| **이미지** | `{img_file or '없음'}` |
-| **클립** | `{clip_file or '없음'}` |
+| 속성 | 값 |
+|------|-----------|
+| **타임스탬프** | `{timestamp}` |
+| **감지 소스** | `{source}` |
+| **상태 코드** | `{status}` |
             """)
 
-    st.markdown("---")
-
+    st.write("")
 
 # ══════════════════════════════════════════════════════
 # 파일 관리
 # ══════════════════════════════════════════════════════
-with st.expander("🗂️ 파일 관리", expanded=False):
-    st.code(f"이벤트: {EVENTS_DIR}")
-    st.code(f"로그: {LOG_FILE}")
+with st.expander("🗂️ 스토리지 관리", expanded=False):
     if os.path.exists(EVENTS_DIR):
         files = [f for f in os.listdir(EVENTS_DIR) if not f.startswith("_")]
-        total = sum(
-            os.path.getsize(os.path.join(EVENTS_DIR, f))
-            for f in files if os.path.isfile(os.path.join(EVENTS_DIR, f))
-        )
+        total = sum(os.path.getsize(os.path.join(EVENTS_DIR, f)) for f in files if os.path.isfile(os.path.join(EVENTS_DIR, f)))
         c1, c2, c3 = st.columns(3)
-        c1.metric("이미지", f"{len([f for f in files if f.endswith('.jpg')])}개")
-        c2.metric("클립", f"{len([f for f in files if f.endswith('.mp4')])}개")
-        c3.metric("용량", f"{total/(1024*1024):.1f} MB")
+        c1.metric("JPG 에셋", f"{len([f for f in files if f.endswith('.jpg')])}개")
+        c2.metric("MP4 에셋", f"{len([f for f in files if f.endswith('.mp4')])}개")
+        c3.metric("점유 용량", f"{total/(1024*1024):.1f} MB")
