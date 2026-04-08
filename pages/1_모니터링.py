@@ -201,15 +201,22 @@ def stop_all():
 
 
 # ══════════════════════════════════════════════════════
-# 사이드바
+# 메인 레이아웃: 설정(왼쪽) + 영상(가운데) + 상태(오른쪽)
 # ══════════════════════════════════════════════════════
-with st.sidebar:
-    st.header("⚙️ 설정")
-    # 이름 변경 적용: 로컬 영상 파일 -> 영상 파일
-    source_type = st.radio("영상 소스", ["📁 영상 파일", "📡 RTSP (자택 CCTV)"], disabled=st.session_state.running)
+# 진행상황 메시지 표시 영역 (배너 바로 아래, 제목 위)
+progress_ph = st.empty()
+
+st.title("🎥 실시간 모니터링")
+
+settings_col, main_col, status_col = st.columns([1, 2.5, 1])
+
+# ── 왼쪽: 영상 소스 설정 ──────────────────────────────
+with settings_col:
+    st.markdown("### 영상 소스 설정")
+    source_type = st.radio("소스", ["📁 파일", "📡 RTSP"], horizontal=True, disabled=st.session_state.running, label_visibility="collapsed")
     selected_source, source_label, source_ready = None, "", False
 
-    if source_type == "📁 영상 파일":
+    if source_type == "📁 파일":
         video_files = get_video_files()
         if video_files:
             chosen = st.selectbox("영상 파일 선택", video_files, disabled=st.session_state.running)
@@ -217,14 +224,12 @@ with st.sidebar:
             source_label    = os.path.splitext(chosen)[0]
             source_ready    = True
         else:
-            st.warning("⚠️ `data/` 폴더에 `.mp4` 파일을 넣어주세요.")
+            st.warning("data/ 폴더에 .mp4 파일을 넣어주세요.")
     else:
-        st.caption("형식: `rtsp://아이디:비밀번호@IP:554/경로`")
-        rtsp_url = st.text_input("RTSP 주소", value=st.session_state.rtsp_url_saved, placeholder="rtsp://...", disabled=st.session_state.running, label_visibility="collapsed")
+        rtsp_url = st.text_input("RTSP 주소", value=st.session_state.rtsp_url_saved, placeholder="rtsp://admin:1234@IP:554/...", disabled=st.session_state.running)
         st.session_state.rtsp_url_saved = rtsp_url
 
-        # 이름 변경 적용: 카메라 이름 (ROI 저장 이름과 동일) -> ROI 설정
-        cam_name = st.text_input("ROI 설정", value=st.session_state.rtsp_cam_name, disabled=st.session_state.running)
+        cam_name = st.text_input("카메라 이름 (ROI 이름)", value=st.session_state.rtsp_cam_name, disabled=st.session_state.running)
         st.session_state.rtsp_cam_name = cam_name
 
         valid, err = validate_rtsp_url(rtsp_url)
@@ -240,33 +245,37 @@ with st.sidebar:
             selected_source, source_label, source_ready = rtsp_url, cam_name, True
 
     st.markdown("---")
+
+    # 시스템 상태
+    st.markdown("### 시스템 상태")
     roi_polygon = load_roi(source_label) if source_label else None
-    if roi_polygon is not None: st.success(f"✅ ROI 로드됨 ({len(roi_polygon)}개 꼭짓점)")
+    if roi_polygon is not None: st.success(f"✅ ROI 로드됨 ({len(roi_polygon)}개)")
     else: st.warning("⚠️ ROI 미설정 — 위험 판단 비활성화")
 
-    st.markdown("---")
-    conf_threshold = st.slider("탐지 신뢰도", 0.1, 0.9, 0.4, 0.05, disabled=st.session_state.running)
-    
-    st.markdown("---")
-    remote_mode = st.checkbox("📡 원격 공유 모드 (ngrok)", value=st.session_state.get("remote_mode", False))
+    if st.session_state.running:
+        st.markdown(f"**FPS** &nbsp; {st.session_state.fps_display}")
+        st.markdown(f"**프레임** &nbsp; {st.session_state.frame_idx}")
+
+    remote_mode = st.checkbox("📡 원격 공유 모드", value=st.session_state.get("remote_mode", False))
     st.session_state.remote_mode = remote_mode
-    if remote_mode: st.caption("해상도 축소 + 5 FPS 제한 적용 중")
+
+    # 시작/정지 버튼
+    start_btn = st.button("▶ 시작", use_container_width=True, disabled=st.session_state.running or not source_ready, type="primary")
+    stop_btn  = st.button("⏹ 정지", use_container_width=True, disabled=not st.session_state.running)
 
     st.markdown("---")
-    c1, c2 = st.columns(2)
-    start_btn = c1.button("▶ 시작", use_container_width=True, disabled=st.session_state.running or not source_ready, type="primary")
-    stop_btn  = c2.button("⏹ 정지", use_container_width=True, disabled=not st.session_state.running)
 
+    conf_threshold = st.slider("감지 신뢰도", 0.1, 0.9, 0.4, 0.05, disabled=st.session_state.running)
 
 # ══════════════════════════════════════════════════════
 # 시작/정지 처리
 # ══════════════════════════════════════════════════════
 if start_btn and selected_source:
     if st.session_state.detector is None:
-        with st.spinner("🔄 YOLOv8 모델 로딩 중..."):
-            st.session_state.detector = Detector()
+        progress_ph.info("🔄 YOLOv8 모델 로딩 중... (첫 실행 시 다운로드가 있을 수 있습니다)")
+        st.session_state.detector = Detector()
         if not st.session_state.detector.loaded:
-            st.error(f"❌ 모델 로드 실패: {st.session_state.detector.load_error}")
+            progress_ph.error(f"❌ 모델 로드 실패: {st.session_state.detector.load_error}")
             st.stop()
 
     is_rtsp = source_type == "📡 RTSP (자택 CCTV)"
@@ -274,26 +283,27 @@ if start_btn and selected_source:
 
     if is_rtsp:
         valid, err = validate_rtsp_url(selected_source)
-        if not valid: st.error(f"❌ {err}"); st.stop()
+        if not valid: progress_ph.error(f"❌ {err}"); st.stop()
 
-        with st.spinner("📡 RTSP 연결 중..."):
-            reader = RTSPThreadReader(selected_source)
-            ok, err_msg = reader.start()
+        progress_ph.info("📡 RTSP 연결 중...")
+        reader = RTSPThreadReader(selected_source)
+        ok, err_msg = reader.start()
 
         if not ok:
-            st.error(f"❌ RTSP 연결 실패: {err_msg}")
+            progress_ph.error(f"❌ RTSP 연결 실패: {err_msg}")
             reader.stop(); st.stop()
 
         st.session_state.rtsp_reader   = reader
         st.session_state.video_source  = None
     else:
         vs = VideoSource(selected_source)
-        with st.spinner("📂 영상 파일 열기 중..."):
-            opened = vs.open()
-        if not opened: st.error("❌ 영상 파일을 열 수 없습니다."); st.stop()
+        progress_ph.info("📂 영상 파일 열기 중...")
+        opened = vs.open()
+        if not opened: progress_ph.error("❌ 영상 파일을 열 수 없습니다."); st.stop()
         st.session_state.video_source = vs
         st.session_state.rtsp_reader  = None
 
+    progress_ph.success("✅ 시작 준비 완료!")
     st.session_state.update({
         "is_rtsp":        is_rtsp,
         "source_name":    source_label,
@@ -313,11 +323,8 @@ if stop_btn:
 
 
 # ══════════════════════════════════════════════════════
-# 메인 레이아웃 플레이스홀더
+# 영상/상태 플레이스홀더 (위에서 만든 columns 사용)
 # ══════════════════════════════════════════════════════
-st.title("🎥 실시간 모니터링")
-main_col, status_col = st.columns([3, 1])
-
 with main_col:
     frame_ph = st.empty()
     info_ph  = st.empty()
@@ -335,7 +342,7 @@ if not st.session_state.running:
     # 텍스트 대신 영상 비율(16:9)의 검은색 박스 렌더링
     frame_ph.markdown("""
         <div style='background-color: #111827; width: 100%; aspect-ratio: 16/9; border-radius: 12px; display: flex; align-items: center; justify-content: center; border: 1px solid #374151;'>
-            <h3 style='color: #9CA3AF; text-align: center;'>▶ 왼쪽 사이드바에서 소스를 선택하고 <b style='color: #60A5FA;'>시작</b>을 누르세요.</h3>
+            <h3 style='color: #9CA3AF; text-align: center;'>▶ 왼쪽에서 소스를 선택하고 <b style='color: #60A5FA;'>시작</b>을 누르세요.</h3>
         </div>
     """, unsafe_allow_html=True)
     
