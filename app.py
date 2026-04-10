@@ -90,7 +90,7 @@ pg = st.navigation([
     st.Page("pages/0_대시보드.py",          title="홈",             icon="🏠"),
     st.Page("pages/1_모니터링.py",          title="모니터링",        icon="🎥"),
     st.Page("pages/2_ROI_설정.py",          title="ROI 설정",       icon="🗺️"),
-    st.Page("pages/3_이벤트_다시보기.py",    title="이벤트",          icon="📋"),
+    st.Page("pages/3_이벤트_다시보기.py",    title="세이프뷰 다시보기",  icon="📋"),
 ])
 
 pg.run()
