@@ -99,3 +99,47 @@ def get_event_image_path(filename: str) -> str | None:
     """이벤트 이미지 파일의 전체 경로를 반환합니다."""
     path = os.path.join(EVENTS_DIR, filename)
     return path if os.path.exists(path) else None
+
+
+def delete_event(timestamp: str):
+    """
+    특정 timestamp의 이벤트를 CSV 로그에서 삭제하고,
+    연결된 이미지/클립 파일도 함께 삭제합니다.
+    """
+    if not os.path.exists(LOG_FILE):
+        return False
+
+    # CSV에서 해당 이벤트 찾기
+    rows = []
+    deleted_files = []
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                if row.get("timestamp") == timestamp:
+                    # 삭제 대상: 연결된 파일 기록
+                    for key in ["image_file", "clip_file"]:
+                        fname = row.get(key, "")
+                        if fname:
+                            fpath = os.path.join(EVENTS_DIR, fname)
+                            if os.path.exists(fpath):
+                                os.remove(fpath)
+                                deleted_files.append(fname)
+                            # 변환된 클립도 삭제
+                            converted = os.path.join(EVENTS_DIR, "_converted", fname)
+                            if os.path.exists(converted):
+                                os.remove(converted)
+                else:
+                    rows.append(row)
+
+        # CSV 다시 쓰기 (삭제된 행 제외)
+        with open(LOG_FILE, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        return True
+    except Exception as e:
+        print(f"[EventSaver] 삭제 오류: {e}")
+        return False

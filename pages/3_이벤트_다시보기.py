@@ -14,6 +14,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from config import EVENTS_DIR, LOG_FILE
+from core.event_saver import delete_event
 
 # ── 페이지 설정 ────────────────────────────────────────
 # st.set_page_config는 app.py에서 1회만 호출
@@ -96,7 +97,7 @@ st.markdown("""
 
 
 # 💡 텍스트 수정: 통합 관제 대시보드 -> 감시 기록 다시보기
-st.markdown("<h1 style='color: #0F172A; font-size: 2.2rem; font-weight: 800;'>🛡️ 감시 기록 다시보기</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color: #0F172A; font-size: 2.2rem; font-weight: 800;'>🛡️ 세이프뷰 다시보기</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color: #64748B; font-size: 1.05rem;'>보안 시스템에 기록된 위험 이벤트를 캘린더 기반으로 추적하고 분석합니다.</p>", unsafe_allow_html=True)
 st.markdown("<hr style='border: 1px solid #E2E8F0; margin-top: 10px; margin-bottom: 30px;'>", unsafe_allow_html=True)
 
@@ -154,14 +155,14 @@ if "sel_date" not in st.session_state:
 filter_col, content_col = st.columns([1, 3])
 
 with filter_col:
-    st.markdown("### 📅 탐색 필터")
+    st.markdown("### 📅 날짜 검색")
     new_date = st.date_input("날짜 선택", value=st.session_state.sel_date)
     if new_date != st.session_state.sel_date:
         st.session_state.sel_date = new_date
         st.rerun()
 
     st.markdown("---")
-    st.markdown("### 📊 관제 요약")
+    st.markdown("### 📊 위험 요약")
     st.metric("누적 위험 감지", f"{len(all_events)}건")
     st.metric("위험 감지 일수", f"{len(event_dates)}일")
 
@@ -171,7 +172,7 @@ sel = st.session_state.sel_date
 # 오른쪽: 캘린더 + 이벤트 목록
 # ══════════════════════════════════════════════════════
 with content_col:
-    st.markdown(f"<h3 style='color: #0F172A; margin-bottom: 20px;'>🗓️ {sel.year}년 {sel.month}월 감시 기록</h3>", unsafe_allow_html=True)
+    st.markdown(f"<h3 style='color: #0F172A; margin-bottom: 20px;'>🗓️ {sel.year}년 {sel.month}월 세이프뷰</h3>", unsafe_allow_html=True)
 
     cal_obj = calendar.Calendar(firstweekday=6)
     weeks = cal_obj.monthdayscalendar(sel.year, sel.month)
@@ -236,8 +237,29 @@ with content_col:
                 st.image(img_path, use_container_width=True)
 
         with info_col2:
-            st.markdown(f"<h4 style='color:#0F172A; margin:0;'>⏱ {time_str}</h4>", unsafe_allow_html=True)
-            st.markdown(f"<p style='margin-top:5px;'><span style='background-color:#FEE2E2; color:#DC2626; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:0.85rem;'>{status}</span> &nbsp; | &nbsp; <b>채널:</b> {source}</p>", unsafe_allow_html=True)
+            confirm_key = f"confirm_del_{idx}"
+
+            if st.session_state.get(confirm_key, False):
+                # 확인 모드: 제목 + 경고 + 확인/취소 가로 배치
+                st.markdown(f"<h4 style='color:#0F172A; margin:0;'>⏱ {time_str}</h4>", unsafe_allow_html=True)
+                st.markdown(f"<p style='margin-top:5px;'><span style='background-color:#FEE2E2; color:#DC2626; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:0.85rem;'>{status}</span> &nbsp; | &nbsp; <b>채널:</b> {source}</p>", unsafe_allow_html=True)
+                st.markdown("**⚠️ 삭제하시겠습니까?**")
+                yes_c, no_c, _ = st.columns([1, 1, 4])
+                if yes_c.button("확인", key=f"yes_{idx}", type="primary", use_container_width=True):
+                    if delete_event(timestamp):
+                        st.session_state[confirm_key] = False
+                        st.rerun()
+                if no_c.button("취소", key=f"no_{idx}", use_container_width=True):
+                    st.session_state[confirm_key] = False
+                    st.rerun()
+            else:
+                # 일반 모드: 제목 + 삭제 버튼 오른쪽
+                t_c, d_c = st.columns([5, 1])
+                t_c.markdown(f"<h4 style='color:#0F172A; margin:0;'>⏱ {time_str}</h4>", unsafe_allow_html=True)
+                if d_c.button("삭제", key=f"del_{idx}", use_container_width=True):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+                st.markdown(f"<p style='margin-top:5px;'><span style='background-color:#FEE2E2; color:#DC2626; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:0.85rem;'>{status}</span> &nbsp; | &nbsp; <b>채널:</b> {source}</p>", unsafe_allow_html=True)
 
         with st.expander(f"🔍 [ {time_str} ] 원본 영상", expanded=False):
             tab_img, tab_clip, tab_info = st.tabs(["📷 스냅샷", "🎬 클립 재생", "ℹ️ 데이터"])

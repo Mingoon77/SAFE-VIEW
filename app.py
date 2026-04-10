@@ -60,6 +60,16 @@ footer {{visibility: hidden;}}
     margin-bottom: 8px;
     border-bottom: 1px solid #E2E8F0;
 }}
+
+/* ── 버튼 글자 가운데 정렬 + 여백 제거 ────────────── */
+[data-testid="stButton"] > button {{
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    min-height: 38px !important;
+    padding: 6px 16px !important;
+    line-height: 1 !important;
+}}
 </style>
 """, unsafe_allow_html=True)
 
