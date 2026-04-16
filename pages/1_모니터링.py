@@ -189,6 +189,15 @@ def get_video_files() -> list:
     if not os.path.exists(DATA_DIR): return []
     return [f for f in os.listdir(DATA_DIR) if f.lower().endswith((".mp4", ".avi", ".mov", ".mkv"))]
 
+def update_fps():
+    """1초 단위로 FPS 계산 및 session_state 갱신"""
+    st.session_state.fps_count += 1
+    elapsed = time.time() - st.session_state.fps_timer
+    if elapsed >= 1.0:
+        st.session_state.fps_display = round(st.session_state.fps_count / elapsed, 1)
+        st.session_state.fps_count = 0
+        st.session_state.fps_timer = time.time()
+
 def stop_all():
     if st.session_state.rtsp_reader:
         st.session_state.rtsp_reader.stop()
@@ -253,8 +262,13 @@ with settings_col:
     else: st.warning("⚠️ ROI 미설정 — 위험 판단 비활성화")
 
     if st.session_state.running:
-        st.markdown(f"**FPS** &nbsp; {st.session_state.fps_display}")
-        st.markdown(f"**프레임** &nbsp; {st.session_state.frame_idx}")
+        # placeholder로 만들어 while 루프에서 실시간 갱신
+        fps_ph   = st.empty()
+        frame_ph_count = st.empty()
+        fps_ph.markdown(f"**FPS** &nbsp; {st.session_state.fps_display}")
+        frame_ph_count.markdown(f"**프레임** &nbsp; {st.session_state.frame_idx}")
+        st.session_state["__fps_ph"]   = fps_ph
+        st.session_state["__frame_ph_count"] = frame_ph_count
 
     remote_mode = st.checkbox("📡 원격 공유 모드", value=st.session_state.get("remote_mode", False))
     st.session_state.remote_mode = remote_mode
@@ -399,6 +413,11 @@ while st.session_state.running:
 
     st.session_state.frame_idx += 1
     frame_idx = st.session_state.frame_idx
+    update_fps()
+    # 사이드바 FPS/프레임 표시 갱신
+    if "__fps_ph" in st.session_state:
+        st.session_state["__fps_ph"].markdown(f"**FPS** &nbsp; {st.session_state.fps_display}")
+        st.session_state["__frame_ph_count"].markdown(f"**프레임** &nbsp; {frame_idx}")
 
     if is_new_frame and (frame_idx % FRAME_SKIP == 0 or frame_idx == 1):
         detections = detector.detect(frame, conf=conf_threshold)
