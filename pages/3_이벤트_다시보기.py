@@ -239,27 +239,32 @@ with content_col:
         with info_col2:
             confirm_key = f"confirm_del_{idx}"
 
+            # 제목 + 삭제 버튼 오른쪽
+            t_c, d_c = st.columns([5, 1])
+            t_c.markdown(f"<h4 style='color:#0F172A; margin:0;'>⏱ {time_str}</h4>", unsafe_allow_html=True)
+
             if st.session_state.get(confirm_key, False):
-                # 확인 모드: 제목 + 경고 + 확인/취소 가로 배치
-                st.markdown(f"<h4 style='color:#0F172A; margin:0;'>⏱ {time_str}</h4>", unsafe_allow_html=True)
-                st.markdown(f"<p style='margin-top:5px;'><span style='background-color:#FEE2E2; color:#DC2626; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:0.85rem;'>{status}</span> &nbsp; | &nbsp; <b>채널:</b> {source}</p>", unsafe_allow_html=True)
-                st.markdown("**⚠️ 삭제하시겠습니까?**")
-                yes_c, no_c, _ = st.columns([1, 1, 4])
-                if yes_c.button("확인", key=f"yes_{idx}", type="primary", use_container_width=True):
-                    if delete_event(timestamp):
-                        st.session_state[confirm_key] = False
-                        st.rerun()
-                if no_c.button("취소", key=f"no_{idx}", use_container_width=True):
+                # 확인 모드: 경고 + 확인/취소 가로 배치
+                st.markdown(
+                    f"<div style='background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; "
+                    f"padding:10px 14px; margin:6px 0;'>"
+                    f"<b style='color:#991B1B;'>⚠️ 이 이벤트를 삭제하시겠습니까?</b><br>"
+                    f"<span style='color:#6B7280; font-size:0.85rem;'>이미지, 영상 클립, 로그가 모두 삭제됩니다.</span>"
+                    f"</div>", unsafe_allow_html=True)
+                y_c, n_c, _ = st.columns([1, 1, 4])
+                if y_c.button("삭제", key=f"yes_{idx}", type="primary", use_container_width=True):
+                    delete_event(timestamp)
+                    st.session_state[confirm_key] = False
+                    st.rerun()
+                if n_c.button("취소", key=f"no_{idx}", use_container_width=True):
                     st.session_state[confirm_key] = False
                     st.rerun()
             else:
-                # 일반 모드: 제목 + 삭제 버튼 오른쪽
-                t_c, d_c = st.columns([5, 1])
-                t_c.markdown(f"<h4 style='color:#0F172A; margin:0;'>⏱ {time_str}</h4>", unsafe_allow_html=True)
                 if d_c.button("삭제", key=f"del_{idx}", use_container_width=True):
                     st.session_state[confirm_key] = True
                     st.rerun()
-                st.markdown(f"<p style='margin-top:5px;'><span style='background-color:#FEE2E2; color:#DC2626; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:0.85rem;'>{status}</span> &nbsp; | &nbsp; <b>채널:</b> {source}</p>", unsafe_allow_html=True)
+
+            st.markdown(f"<p style='margin-top:5px;'><span style='background-color:#FEE2E2; color:#DC2626; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:0.85rem;'>{status}</span> &nbsp; | &nbsp; <b>채널:</b> {source}</p>", unsafe_allow_html=True)
 
         with st.expander(f"🔍 [ {time_str} ] 원본 영상", expanded=False):
             tab_img, tab_clip, tab_info = st.tabs(["📷 스냅샷", "🎬 클립 재생", "ℹ️ 데이터"])

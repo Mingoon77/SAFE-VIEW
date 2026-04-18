@@ -56,24 +56,50 @@ st.markdown("""
     .safe-title { color: #4ade80 !important; margin: 0; font-size: 2.2rem; font-weight: 900; }
     .safe-sub { color: #a7f3d0 !important; margin: 5px 0 0; font-size: 1.1rem; font-weight: bold; }
     </style>
+    <script>
+    // 경고음 생성 (Web Audio API — 외부 파일 불필요)
+    function playAlertSound() {
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            // 비프음 2회
+            [0, 0.25].forEach(delay => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.value = 880;  // A5 음
+                osc.type = 'square';
+                gain.gain.value = 0.3;
+                osc.start(ctx.currentTime + delay);
+                osc.stop(ctx.currentTime + delay + 0.15);
+            });
+        } catch(e) {}
+    }
+    </script>
 """, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════
 # 🎯 중앙 정렬 & 굵은 한글 출력 도우미 함수
 # ══════════════════════════════════════════════════════
+# 폰트 캐시 (매 프레임 디스크 로드 방지)
+_font_cache = {}
+def _get_font(size):
+    if size not in _font_cache:
+        try:
+            _font_cache[size] = ImageFont.truetype("malgunbd.ttf", size)
+        except:
+            try:
+                _font_cache[size] = ImageFont.truetype("malgun.ttf", size)
+            except:
+                _font_cache[size] = ImageFont.load_default()
+    return _font_cache[size]
+
 def draw_text_korean_centered(img, text, y_pos, font_size, color_bgr):
     """OpenCV 이미지의 가로 중앙에 한글을 굵고 선명하게 그리는 함수"""
     img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(img_pil)
-    
-    try:
-        font = ImageFont.truetype("malgunbd.ttf", font_size)
-    except:
-        try:
-            font = ImageFont.truetype("malgun.ttf", font_size)
-        except:
-            font = ImageFont.load_default()
+    font = _get_font(font_size)
             
     bbox = draw.textbbox((0, 0), text, font=font)
     text_width = bbox[2] - bbox[0]
@@ -270,8 +296,8 @@ with settings_col:
         st.session_state["__fps_ph"]   = fps_ph
         st.session_state["__frame_ph_count"] = frame_ph_count
 
-    remote_mode = st.checkbox("📡 원격 공유 모드", value=st.session_state.get("remote_mode", False))
-    st.session_state.remote_mode = remote_mode
+    # 원격 공유 모드 자동 감지 (수동 체크박스 제거)
+    # → Streamlit 헤더의 Host 정보로 localhost 여부 판별
 
     # 시작/정지 버튼
     start_btn = st.button("▶ 시작", use_container_width=True, disabled=st.session_state.running or not source_ready, type="primary")
@@ -353,12 +379,21 @@ with status_col:
 # 대기 화면 (검은색 스크린 박스 적용)
 # ══════════════════════════════════════════════════════
 if not st.session_state.running:
-    # 텍스트 대신 영상 비율(16:9)의 검은색 박스 렌더링
-    frame_ph.markdown("""
-        <div style='background-color: #111827; width: 100%; aspect-ratio: 16/9; border-radius: 12px; display: flex; align-items: center; justify-content: center; border: 1px solid #374151;'>
-            <h3 style='color: #9CA3AF; text-align: center;'>▶ 왼쪽에서 소스를 선택하고 <b style='color: #60A5FA;'>시작</b>을 누르세요.</h3>
-        </div>
-    """, unsafe_allow_html=True)
+    # 대기화면: PIL로 이미지 생성 (테마 무관, 외부 접속에서도 동일 표시)
+    from PIL import Image as PILImage, ImageDraw as PILDraw, ImageFont as PILFont
+    _wi = PILImage.new("RGB", (960, 540), (17, 24, 39))
+    _wd = PILDraw.Draw(_wi)
+    try:
+        _f1 = PILFont.truetype("malgunbd.ttf", 28)
+        _f2 = PILFont.truetype("malgun.ttf", 22)
+    except:
+        _f1 = _f2 = PILFont.load_default()
+    _t1, _t2 = "▶ 왼쪽에서 소스를 선택하고", "시작 버튼을 누르세요"
+    _b1 = _wd.textbbox((0, 0), _t1, font=_f1)
+    _b2 = _wd.textbbox((0, 0), _t2, font=_f2)
+    _wd.text(((960 - _b1[2]) // 2, 230), _t1, fill=(156, 163, 175), font=_f1)
+    _wd.text(((960 - _b2[2]) // 2, 275), _t2, fill=(96, 165, 250), font=_f2)
+    frame_ph.image(_wi, use_container_width=True)
     
     status_ph.markdown("""
     <div class='status-box-safe' style='background: #1e293b; border-color: #475569;'>
@@ -436,6 +471,8 @@ while st.session_state.running:
             st.session_state.last_event_ts = now
             st.session_state.alert_msg     = "🚨 보안 구역 내 위험 감지!"
             st.session_state.alert_expires = now + 4.0
+            # 경고음 재생
+            alert_ph.markdown("<script>playAlertSound();</script>", unsafe_allow_html=True)
 
     st.session_state.prev_danger = is_danger
 
@@ -468,18 +505,26 @@ while st.session_state.running:
         st.session_state.post_frames.append(annotated.copy())
         if now - st.session_state.post_rec_start >= CLIP_POST_SEC:
             all_clip_frames = st.session_state.pre_frames + st.session_state.post_frames
-            clip_name, _ = save_event_clip(deque(all_clip_frames), st.session_state.source_name, fps=MAX_CLIP_FPS)
+            clip_name, _ = save_event_clip(all_clip_frames, st.session_state.source_name, fps=MAX_CLIP_FPS)
             log_event(st.session_state.source_name, st.session_state.pending_img_name, clip_name)
-            
+
+            # 메모리 즉시 해제
+            del all_clip_frames
             st.session_state.post_recording = False
-            st.session_state.pre_frames     = []
+            st.session_state.pre_frames.clear()
             st.session_state.post_frames    = []
             st.session_state.pending_img_name = ""
 
     st.session_state.frame_buffer.append(annotated.copy())
 
+    # 원격 접속 자동 감지: localhost가 아니면 해상도 축소
     display_frame = annotated
-    if st.session_state.get("remote_mode", False):
+    try:
+        host = st.context.headers.get("Host", "localhost")
+    except Exception:
+        host = "localhost"
+    is_remote = "localhost" not in host and "127.0.0.1" not in host
+    if is_remote:
         h_orig, w_orig = display_frame.shape[:2]
         max_w = 640
         if w_orig > max_w:
@@ -517,5 +562,5 @@ while st.session_state.running:
             for ev in recent: lines += f"- `{ev['timestamp'][:19]}` **{ev['status']}**\n"
             events_ph.markdown(lines)
 
-    if st.session_state.get("remote_mode", False): time.sleep(0.2)
+    if is_remote: time.sleep(0.2)
     else: time.sleep(0.001 if is_rtsp else 0.020)

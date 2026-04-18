@@ -144,11 +144,13 @@ class VideoSource:
         ROI 설정 화면에서 기준 프레임을 얻을 때 사용합니다.
         """
         vs = VideoSource(self.source)
-        if not vs.open():
-            return None
-        ret, frame = vs.cap.read()
-        vs.release()
-        return frame if ret else None
+        try:
+            if not vs.open():
+                return None
+            ret, frame = vs.cap.read()
+            return frame if ret else None
+        finally:
+            vs.release()  # 예외 발생해도 반드시 해제
 
     def reset(self):
         """파일 소스를 처음으로 되감습니다 (RTSP는 무시)."""
