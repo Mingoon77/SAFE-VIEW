@@ -17,6 +17,18 @@ def _roi_path(source_name: str) -> str:
     return os.path.join(ROI_DIR, f"{safe_name}.json")
 
 
+def delete_roi(source_name: str) -> bool:
+    """저장된 ROI 파일을 삭제합니다."""
+    path = _roi_path(source_name)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+            return True
+        except Exception as e:
+            print(f"[ROI] 삭제 실패: {e}")
+    return False
+
+
 def save_roi(source_name: str, points: list) -> str:
     """
     ROI 좌표를 JSON 파일로 저장합니다.

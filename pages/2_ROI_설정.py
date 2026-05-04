@@ -18,7 +18,7 @@ if ROOT not in sys.path:
 
 from config import DATA_DIR
 from core.video_source import VideoSource
-from core.roi_manager  import save_roi, load_roi, list_saved_rois
+from core.roi_manager  import save_roi, load_roi, list_saved_rois, delete_roi
 
 try:
     from streamlit_image_coordinates import streamlit_image_coordinates
@@ -105,12 +105,21 @@ with settings_col:
         else:
             st.warning("`data/` 폴더에 영상 파일을 넣어주세요.")
     else:
-        rtsp = st.text_input(
-            "RTSP 주소",
-            placeholder="rtsp://admin:1234@IP:554/..."
-        )
-        if rtsp.startswith("rtsp://"):
-            selected_source = rtsp
+        # 모니터링 페이지와 동일한 프리셋 토글 사용
+        from core.rtsp_presets import load_presets
+
+        presets = load_presets()
+        if presets:
+            preset_names = [p["name"] for p in presets]
+            selected_name = st.selectbox("📡 카메라 선택", preset_names)
+            selected_preset = next(p for p in presets if p["name"] == selected_name)
+            selected_source = selected_preset["url"]
+            auto_label      = selected_name   # ROI 이름을 카메라 이름과 자동 매칭
+        else:
+            st.info(
+                "등록된 카메라가 없습니다.\n\n"
+                "**모니터링 페이지** → 📡 RTSP → '➕ 카메라 등록 / 삭제'에서 먼저 추가하세요."
+            )
 
     if st.button("📷 기준 프레임 불러오기", type="primary",
                  disabled=selected_source is None, use_container_width=True):
@@ -171,11 +180,29 @@ with settings_col:
     st.markdown("### 📂 저장된 ROI")
     saved = list_saved_rois()
     if saved:
-        sel = st.selectbox("불러올 ROI", ["— 선택 —"] + saved)
+        sel = st.selectbox("ROI 선택", ["— 선택 —"] + saved)
         if sel != "— 선택 —":
             loaded_pts = load_roi(sel)
             if loaded_pts is not None:
                 st.success(f"{len(loaded_pts)}개 꼭짓점")
+
+            # 삭제 (확인 절차 포함)
+            confirm_key = f"confirm_del_roi_{sel}"
+            if st.session_state.get(confirm_key, False):
+                st.warning(f"⚠️ **'{sel}'** ROI를 정말로 삭제하시겠습니까?")
+                yc, nc = st.columns(2)
+                if yc.button("확인", key=f"yes_del_roi_{sel}", type="primary", use_container_width=True):
+                    if delete_roi(sel):
+                        st.session_state[confirm_key] = False
+                        st.success(f"'{sel}' 삭제됨")
+                        st.rerun()
+                if nc.button("취소", key=f"no_del_roi_{sel}", use_container_width=True):
+                    st.session_state[confirm_key] = False
+                    st.rerun()
+            else:
+                if st.button("🗑️ ROI 삭제", use_container_width=True):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
     else:
         st.caption("저장된 ROI 없음")
 
