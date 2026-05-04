@@ -1,0 +1,18 @@
+[
+  {
+    "name": "주차장 입구",
+    "url": "rtsp://admin:qwer1234@1.246.248.38:554/Streaming/Channels/402"
+  },
+  {
+    "name": "카메라03",
+    "url": "rtsp://admin:qwer1234@1.246.248.38:554/Streaming/Channels/302"
+  },
+  {
+    "name": "카메라02",
+    "url": "rtsp://admin:qwer1234@1.246.248.38:554/Streaming/Channels/202"
+  },
+  {
+    "name": "카메라01",
+    "url": "rtsp://admin:qwer1234@1.246.248.38:554/Streaming/Channels/102"
+  }
+]

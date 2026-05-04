@@ -261,17 +261,82 @@ with settings_col:
         else:
             st.warning("data/ 폴더에 .mp4 파일을 넣어주세요.")
     else:
-        rtsp_url = st.text_input("RTSP 주소", value=st.session_state.rtsp_url_saved, placeholder="rtsp://admin:1234@IP:554/...", disabled=st.session_state.running)
-        st.session_state.rtsp_url_saved = rtsp_url
+        # ── RTSP 프리셋 토글 방식 (다중 카메라 지원) ──────
+        from core.rtsp_presets import load_presets, add_preset, delete_preset
 
-        cam_name = st.text_input("카메라 이름 (ROI 이름)", value=st.session_state.rtsp_cam_name, disabled=st.session_state.running)
-        st.session_state.rtsp_cam_name = cam_name
+        presets = load_presets()
 
-        valid, err = validate_rtsp_url(rtsp_url)
-        if rtsp_url and not valid: st.error(f"⛔ {err}")
-        elif valid: st.success("✅ 주소 형식 OK")
+        # 1) 저장된 프리셋이 있으면 드롭다운(▼ 토글) 표시
+        if presets:
+            preset_names = [p["name"] for p in presets]
+            # 기본 선택값 (이전에 선택했던 카메라 유지)
+            default_idx = 0
+            if st.session_state.rtsp_cam_name in preset_names:
+                default_idx = preset_names.index(st.session_state.rtsp_cam_name)
 
-        if st.button("🔌 연결 테스트", disabled=not valid or st.session_state.running):
+            selected_name = st.selectbox(
+                "📡 카메라 선택",
+                preset_names,
+                index=default_idx,
+                disabled=st.session_state.running,
+            )
+            # 선택된 프리셋의 URL 가져오기
+            selected_preset = next(p for p in presets if p["name"] == selected_name)
+            rtsp_url = selected_preset["url"]
+            cam_name = selected_name
+            st.session_state.rtsp_url_saved = rtsp_url
+            st.session_state.rtsp_cam_name  = cam_name
+        else:
+            st.info("등록된 카메라가 없습니다. 아래에서 추가하세요.")
+            rtsp_url, cam_name = "", ""
+
+        # 2) 프리셋 추가/삭제 (실행 중이 아닐 때만)
+        if not st.session_state.running:
+            with st.expander("➕ 카메라 등록 / 삭제"):
+                # 추가 영역
+                st.markdown("**카메라 등록**")
+                new_name = st.text_input("이름", placeholder="예: 주차장, 골목, 입구", key="new_preset_name")
+                new_url  = st.text_input("RTSP 주소", placeholder="rtsp://admin:1234@IP:554/...", key="new_preset_url")
+                if st.button("➕ 추가", use_container_width=True, type="primary"):
+                    ok, msg = add_preset(new_name, new_url)
+                    (st.success if ok else st.error)(msg)
+                    if ok: st.rerun()
+
+                # 삭제 영역 (확인 절차 포함)
+                if presets:
+                    st.markdown("---")
+                    st.markdown("**카메라 삭제**")
+                    del_name = st.selectbox(
+                        "삭제할 카메라",
+                        [p["name"] for p in presets],
+                        key="del_preset_select",
+                    )
+
+                    confirm_key = f"confirm_del_preset_{del_name}"
+
+                    if st.session_state.get(confirm_key, False):
+                        # 확인 단계
+                        st.warning(f"⚠️ **'{del_name}'** 카메라를 정말로 삭제하시겠습니까?")
+                        yc, nc = st.columns(2)
+                        if yc.button("확인", key=f"yes_del_{del_name}", type="primary", use_container_width=True):
+                            if delete_preset(del_name):
+                                st.session_state[confirm_key] = False
+                                st.success(f"'{del_name}' 삭제됨")
+                                st.rerun()
+                        if nc.button("취소", key=f"no_del_{del_name}", use_container_width=True):
+                            st.session_state[confirm_key] = False
+                            st.rerun()
+                    else:
+                        if st.button("🗑️ 삭제", use_container_width=True):
+                            st.session_state[confirm_key] = True
+                            st.rerun()
+
+        # 3) URL 검증 + 연결 테스트
+        valid, err = validate_rtsp_url(rtsp_url) if rtsp_url else (False, "")
+        if rtsp_url and not valid:
+            st.error(f"⛔ {err}")
+
+        if rtsp_url and st.button("🔌 연결 테스트", disabled=not valid or st.session_state.running):
             with st.spinner("연결 테스트 중..."):
                 ok, msg = test_rtsp_connection(rtsp_url)
             (st.success if ok else st.error)(f"{'✅' if ok else '❌'} {msg}")
