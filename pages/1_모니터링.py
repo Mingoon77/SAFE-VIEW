@@ -19,6 +19,8 @@ from core.event_saver  import (
     save_event_image, save_event_clip,
     log_event, get_recent_events,
 )
+from core.parked_detector import update as update_parked, reset as reset_parked
+from core.image_enhancement import auto_enhance, get_brightness
 
 # ══════════════════════════════════════════════════════
 # 페이지 설정 & CSS 애니메이션
@@ -233,6 +235,7 @@ def stop_all():
         st.session_state.video_source = None
     st.session_state.running        = False
     st.session_state.last_good_frame = None
+    reset_parked()   # 정지 차량 판단 이력 초기화
 
 
 # ══════════════════════════════════════════════════════
@@ -370,7 +373,18 @@ with settings_col:
 
     st.markdown("---")
 
-    conf_threshold = st.slider("감지 신뢰도", 0.1, 0.9, 0.4, 0.05, disabled=st.session_state.running)
+    # 감지 신뢰도는 내부 기본값 사용 (UI 숨김)
+    conf_threshold = 0.4
+
+    # 야간 자동 밝기 보정
+    enhance_mode = st.radio(
+        "야간 밝기 보정",
+        ["자동", "강제 ON", "OFF"],
+        index=0,
+        horizontal=True,
+        help="저조도 환경에서 영상을 자동으로 밝게 보정합니다",
+    )
+    st.session_state.enhance_mode = enhance_mode
 
 # ══════════════════════════════════════════════════════
 # 시작/정지 처리
@@ -511,6 +525,14 @@ while st.session_state.running:
         st.session_state.last_good_frame = frame
         is_new_frame = True
 
+    # 야간 밝기 보정 적용 (라디오 모드에 따라)
+    mode = st.session_state.get("enhance_mode", "자동")
+    if mode == "강제 ON":
+        frame, _ = auto_enhance(frame, force=True)
+    elif mode == "자동":
+        frame, _ = auto_enhance(frame, force=False)
+    # "OFF" 면 그대로 통과
+
     st.session_state.frame_idx += 1
     frame_idx = st.session_state.frame_idx
     update_fps()
@@ -521,6 +543,17 @@ while st.session_state.running:
 
     if is_new_frame and (frame_idx % FRAME_SKIP == 0 or frame_idx == 1):
         detections = detector.detect(frame, conf=conf_threshold)
+
+        # 정지 차량 판단 (좌표 비교 기반 — AI 추적 안 씀)
+        car_centers = [d["center"] for d in detections if d["class_name"] == "car"]
+        parked_flags = update_parked(car_centers)
+        car_iter = iter(parked_flags)
+        for d in detections:
+            if d["class_name"] == "car":
+                d["is_parked"] = next(car_iter)
+            else:
+                d["is_parked"] = False
+
         st.session_state.last_detections = detections
     else:
         detections = st.session_state.last_detections

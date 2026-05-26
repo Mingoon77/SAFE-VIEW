@@ -25,20 +25,23 @@ def check_danger(detections: list, roi_polygon) -> dict:
     persons = [d for d in detections if d["class_name"] == "person"]
     cars    = [d for d in detections if d["class_name"] == "car"]
 
+    # 정지 차량은 위험 판단에서 제외 (이동 가능성이 있는 차량만 위험 요소로 간주)
+    active_cars = [c for c in cars if not c.get("is_parked", False)]
+
     result = {
         "is_danger":         False,
         "has_person":        len(persons) > 0,
-        "has_car":           len(cars) > 0,
+        "has_car":           len(active_cars) > 0,
         "dangerous_persons": [],
         "all_persons":       persons,
-        "all_cars":          cars,
+        "all_cars":          cars,   # 시각화는 정지 차량 포함 (노란 박스로 표시)
     }
 
     # 위험 판단 조건:
     # 1) person 존재
-    # 2) car 존재
+    # 2) 이동 가능 차량(active_cars) 존재
     # 3) person의 발 위치(bottom_center)가 ROI 내부
-    if not persons or not cars:
+    if not persons or not active_cars:
         return result
 
     if roi_polygon is None:
@@ -77,21 +80,65 @@ def draw_detections(frame, danger_result: dict, roi_polygon=None):
     # 위험한 person ID 집합 (비교용)
     dangerous_ids = {id(p) for p in danger_result["dangerous_persons"]}
 
-    # 모든 탐지 박스 그리기
-    all_detections = danger_result["all_persons"] + danger_result["all_cars"]
-    for det in all_detections:
-        x1, y1, x2, y2 = det["bbox"]
-        # 위험 상태일 때는 모든 박스를 빨간색으로
+    YELLOW = (0, 255, 255)  # BGR: 정지 차량용 노란색
+
+    # 사람 박스 그리기
+    for person in danger_result["all_persons"]:
+        x1, y1, x2, y2 = person["bbox"]
         color = COLOR_DANGER if is_danger else COLOR_NORMAL
-        # 박스
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        # 레이블 배경
-        label = f"{det['class_name']} {det['confidence']:.2f}"
+        label = "person"
         (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
         cv2.rectangle(frame, (x1, y1 - lh - 6), (x1 + lw, y1), color, -1)
-        # 레이블 텍스트
         cv2.putText(frame, label, (x1, y1 - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+    # 차량 박스 그리기 (정지 여부에 따라 색상 + 라벨 위치 분기)
+    frame_h, frame_w = frame.shape[:2]
+    for car in danger_result["all_cars"]:
+        x1, y1, x2, y2 = car["bbox"]
+        is_parked = car.get("is_parked", False)
+
+        if is_parked:
+            color    = YELLOW
+            text_clr = (0, 0, 0)
+            label_name = "pk.car"
+        elif is_danger:
+            color    = COLOR_DANGER
+            text_clr = (255, 255, 255)
+            label_name = "car"
+        else:
+            color    = COLOR_NORMAL
+            text_clr = (255, 255, 255)
+            label_name = "car"
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        label = label_name
+        (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+
+        if is_parked:
+            # 정지 차량 라벨은 박스 아래쪽에 배치 (왼쪽 기본, 잘리면 오른쪽)
+            label_x = x1
+            label_y = y2 + lh + 6
+            # 화면 아래로 잘리면 박스 위로 폴백
+            if label_y + 4 > frame_h:
+                label_y = y1 - 4
+                bg_top = y1 - lh - 6
+                bg_bot = y1
+            else:
+                bg_top = y2 + 2
+                bg_bot = y2 + lh + 8
+            # 오른쪽으로 넘치면 오른쪽 정렬로 보정
+            if label_x + lw > frame_w:
+                label_x = max(0, x2 - lw)
+            cv2.rectangle(frame, (label_x, bg_top), (label_x + lw, bg_bot), color, -1)
+            cv2.putText(frame, label, (label_x, label_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, text_clr, 1, cv2.LINE_AA)
+        else:
+            # 일반 차량 라벨은 기존대로 박스 위쪽
+            cv2.rectangle(frame, (x1, y1 - lh - 6), (x1 + lw, y1), color, -1)
+            cv2.putText(frame, label, (x1, y1 - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, text_clr, 1, cv2.LINE_AA)
 
     # 위험 상태: 빨간 테두리 오버레이
     if is_danger:
