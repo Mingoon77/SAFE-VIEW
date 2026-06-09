@@ -14,8 +14,8 @@ CLASS_IDS = {
     3: "motorcycle",
     7: "truck",
 }
-# 이번 프로토타입에서 실제로 감지할 클래스
-TARGET_CLASS_IDS = [0, 2]          # person, car
+# 이번 프로토타입에서 실제로 감지할 클래스 (오토바이는 car 클래스로 통합 처리)
+TARGET_CLASS_IDS = [0, 2, 3]       # person, car, motorcycle
 
 # ── 폴더 경로 ──────────────────────────────────────────
 BASE_DIR        = os.path.dirname(os.path.abspath(__file__))

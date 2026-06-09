@@ -1,0 +1,27 @@
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 가상환경
+venv/
+.venv/
+
+# 사용자 영상 데이터 (대용량)
+data/
+
+# 이벤트 클립 변환 캐시 (재생 시 자동 생성)
+saved_events/_converted/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# 환경변수·비밀
+.env
+*.local

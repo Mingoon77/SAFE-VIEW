@@ -97,13 +97,55 @@ with settings_col:
     auto_label      = ""
 
     if source_type == "📁 파일":
+        # 영상 파일 업로드 (PC 어디서나 빠르게 불러오기)
+        uploaded = st.file_uploader(
+            "💾 영상 파일 불러오기",
+            type=["mp4", "avi", "mov", "mkv"],
+            help="PC에서 영상을 선택하면 data 폴더에 자동 저장되어 다음에도 그대로 사용할 수 있습니다.",
+        )
+        if uploaded is not None:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            save_path = os.path.join(DATA_DIR, uploaded.name)
+            if not os.path.exists(save_path):
+                with open(save_path, "wb") as f:
+                    f.write(uploaded.getbuffer())
+                st.success(f"✅ '{uploaded.name}' 저장 완료")
+
         files = get_video_files()
         if files:
-            chosen         = st.selectbox("파일 선택", files)
+            default_idx = 0
+            if uploaded is not None and uploaded.name in files:
+                default_idx = files.index(uploaded.name)
+            chosen          = st.selectbox("파일 선택", files, index=default_idx)
             selected_source = os.path.join(DATA_DIR, chosen)
             auto_label      = os.path.splitext(chosen)[0]
+
+            # 영상 파일 삭제 관리
+            with st.expander("🗑️ 저장된 영상 삭제"):
+                pending = st.session_state.get("video_pending_delete")
+                if pending and pending in files:
+                    st.warning(f"⚠️ **'{pending}'** 영상을 정말 삭제하시겠습니까?")
+                    yc, nc = st.columns(2)
+                    if yc.button("✅ 확인", type="primary", use_container_width=True, key="vid_del_yes_roi"):
+                        try:
+                            os.remove(os.path.join(DATA_DIR, pending))
+                            st.session_state.video_pending_delete = None
+                            st.success(f"'{pending}' 삭제 완료")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"삭제 실패: {e}")
+                    if nc.button("❌ 취소", use_container_width=True, key="vid_del_no_roi"):
+                        st.session_state.video_pending_delete = None
+                        st.rerun()
+                else:
+                    for vf in files:
+                        vc1, vc2 = st.columns([5, 1])
+                        vc1.markdown(f"📹 `{vf}`")
+                        if vc2.button("🗑️", key=f"del_vid_roi_{vf}", help="이 영상 삭제"):
+                            st.session_state.video_pending_delete = vf
+                            st.rerun()
         else:
-            st.warning("`data/` 폴더에 영상 파일을 넣어주세요.")
+            st.warning("위에서 영상 파일을 업로드하거나 `data/` 폴더에 영상 파일을 넣어주세요.")
     else:
         # 모니터링 페이지와 동일한 프리셋 토글 사용
         from core.rtsp_presets import load_presets
@@ -139,10 +181,13 @@ with settings_col:
 
     # ROI 저장 카드
     st.markdown("### ROI 저장")
+    # 영상이 바뀌면 text_input의 key가 바뀌어 새 박스로 다시 그려짐
+    # → 영상 변경 시 항상 auto_label로 초기화되어 매칭 어긋남 방지
     label_input = st.text_input(
         "ROI 이름",
-        value=st.session_state.roi_src_label or auto_label,
-        help="모니터링 페이지에서 같은 이름의 소스를 선택하면 자동 로드됩니다."
+        value=auto_label,
+        key=f"roi_label_input_{auto_label}",
+        help="모니터링 페이지에서 같은 이름의 영상을 선택하면 자동 로드됩니다. 영상 파일명과 동일하게 두는 것을 권장합니다.",
     )
     st.session_state.roi_src_label = label_input
 

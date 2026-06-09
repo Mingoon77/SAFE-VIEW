@@ -60,9 +60,15 @@ class Detector:
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
 
+            # 오토바이(motorcycle)는 car 클래스로 통합 매핑
+            # → 위험 판단, 정지차량 판정, 시각화 모두 car와 동일하게 처리됨
+            class_name = CLASS_IDS.get(cls_id, "unknown")
+            if class_name == "motorcycle":
+                class_name = "car"
+
             detections.append({
                 "class_id":      cls_id,
-                "class_name":    CLASS_IDS.get(cls_id, "unknown"),
+                "class_name":    class_name,
                 "confidence":    round(confidence, 2),
                 "bbox":          (x1, y1, x2, y2),
                 "center":        (cx, cy),

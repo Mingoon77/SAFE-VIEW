@@ -9,7 +9,7 @@ if ROOT not in sys.path:
 
 from config import EVENTS_DIR, ROI_DIR, DATA_DIR
 
-st.title("🚨 주차 차량 사각지대 AI기반 위험 감지 시스템")
+st.title("🚨 도로변 사각지대 보행자 위험 감지 및 시청각 경고 시스템")
 st.markdown("---")
 
 col1, col2 = st.columns([2, 1])

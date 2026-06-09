@@ -9,7 +9,7 @@ from config import EVENTS_DIR, LOGS_DIR, ROI_DIR, DATA_DIR
 
 # ── 페이지 설정 ──────────────────────────────────────────
 st.set_page_config(
-    page_title="SAFEVIEW — AI 기반 사각지대 위험 감지 시스템",
+    page_title="세이프뷰",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -80,7 +80,7 @@ st.markdown(f"""
     <img src="data:image/png;base64,{LOGO_B64}" style="width:38px; height:38px; border-radius:6px;">
     <div>
         <span style="font-size:1.15rem; font-weight:800; color:#1a1a1a;">SAFE<span style="color:#4CAF50;">VIEW</span></span>
-        <span style="color:#64748B; font-size:0.9rem; margin-left:4px;">AI 기반 사각지대 위험 감지 시스템</span>
+        <span style="color:#64748B; font-size:0.9rem; margin-left:4px;">도로변 사각지대 보행자 위험 감지 및 시청각 경고 시스템</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
